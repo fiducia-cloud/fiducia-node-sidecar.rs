@@ -31,12 +31,7 @@ const SERVICE: &str = "fiducia-node-sidecar";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    fiducia_telemetry::init(SERVICE);
 
     let node_url =
         std::env::var("FIDUCIA_NODE_URL").unwrap_or_else(|_| "http://localhost:8090".to_string());
