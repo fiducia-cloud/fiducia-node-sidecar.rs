@@ -23,11 +23,19 @@ use std::time::Duration;
 
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer, timeout::TimeoutLayer,
+    trace::TraceLayer,
+};
 
 use meta::NodeMeta;
 
 const SERVICE: &str = "fiducia-node-sidecar";
+
+/// Bound request handling time (the sidecar's endpoints are all fast/local).
+const REQUEST_TIMEOUT_SECS: u64 = 15;
+/// Cap request bodies; the sidecar serves tiny meta/metrics responses.
+const MAX_BODY_BYTES: usize = 64 * 1024;
 
 #[tokio::main]
 async fn main() {
@@ -70,7 +78,12 @@ async fn main() {
         .route("/readyz", get(health))
         .route("/meta", get(move || meta_handler(node_meta.clone())))
         .route("/metrics", get(metrics))
-        .layer(TraceLayer::new_for_http());
+        // Hardening stack (outermost last): catch handler panics → 500, bound
+        // request time, and cap body size.
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(CatchPanicLayer::new());
 
     let port: u16 = std::env::var("PORT")
         .ok()
