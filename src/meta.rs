@@ -32,16 +32,15 @@ impl NodeMeta {
         }
     }
 
-    /// The single failure-domain label the brain spreads replicas across. For the
-    /// cross-cluster 2-of-3 guarantee this is the **region** (one replica per
-    /// cluster); `availability_zone` is appended when present for finer spread
-    /// within a region. Empty string = unknown (its own domain).
+    /// The single failure-domain label the brain spreads replicas across.
+    ///
+    /// The brain spreads on **one** label, so it must be the *primary* domain to
+    /// keep distinct — the **region** (cluster), which is what makes the
+    /// cross-cluster "one replica per cluster, survive losing a whole cluster"
+    /// guarantee hold. (Appending the AZ here would let two replicas land in two
+    /// AZs of the *same* region, breaking that.) AZ/rack still travel in the
+    /// metadata for observability. Empty = unknown (treated as its own domain).
     pub fn failure_domain(&self) -> String {
-        match (&self.region, &self.availability_zone) {
-            (Some(region), Some(az)) => format!("{region}/{az}"),
-            (Some(region), None) => region.clone(),
-            (None, Some(az)) => az.clone(),
-            (None, None) => String::new(),
-        }
+        self.region.clone().unwrap_or_default()
     }
 }
