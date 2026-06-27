@@ -64,6 +64,10 @@ struct HeartbeatBody {
 async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
     let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
     let body: Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    Some(status_from_value(&body))
+}
+
+fn status_from_value(body: &Value) -> NodeStatusSummary {
     let consensus = &body["consensus"];
 
     let leading_shards = u32_array(&consensus["leading_shards"]);
@@ -77,10 +81,10 @@ async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<
         })
         .unwrap_or_default();
 
-    Some(NodeStatusSummary {
+    NodeStatusSummary {
         leading_shards,
         hosted_shards,
-    })
+    }
 }
 
 /// `POST {brain_url}/v1/nodes/{node_id}/heartbeat` with metadata + shard summary.
@@ -101,13 +105,62 @@ async fn send_heartbeat(
         hosted_shards: status.hosted_shards,
         leading_shards: status.leading_shards,
     };
-    client.post(url).json(&body).send().await?.error_for_status()?;
+    client
+        .post(url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
     Ok(())
 }
 
 fn u32_array(value: &Value) -> Vec<u32> {
     value
         .as_array()
-        .map(|xs| xs.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+        .map(|xs| {
+            xs.iter()
+                .filter_map(|x| x.as_u64().map(|n| n as u32))
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn status_parser_extracts_leading_and_hosted_shards() {
+        let status = status_from_value(&json!({
+            "consensus": {
+                "leading_shards": [0, 2],
+                "shards": [
+                    { "shard_id": 0, "role": "leader" },
+                    { "shard_id": 1, "role": "follower" },
+                    { "shard_id": 2, "role": "leader" }
+                ]
+            }
+        }));
+
+        assert_eq!(status.leading_shards, vec![0, 2]);
+        assert_eq!(status.hosted_shards, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn status_parser_tolerates_missing_or_malformed_consensus_fields() {
+        let status = status_from_value(&json!({
+            "consensus": {
+                "leading_shards": ["bad", 3],
+                "shards": [
+                    { "shard_id": "bad" },
+                    { "shard_id": 4 },
+                    {}
+                ]
+            }
+        }));
+
+        assert_eq!(status.leading_shards, vec![3]);
+        assert_eq!(status.hosted_shards, vec![4]);
+    }
 }
