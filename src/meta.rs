@@ -31,4 +31,17 @@ impl NodeMeta {
             version: std::env::var("FIDUCIA_NODE_VERSION").ok(),
         }
     }
+
+    /// The single failure-domain label the brain spreads replicas across. For the
+    /// cross-cluster 2-of-3 guarantee this is the **region** (one replica per
+    /// cluster); `availability_zone` is appended when present for finer spread
+    /// within a region. Empty string = unknown (its own domain).
+    pub fn failure_domain(&self) -> String {
+        match (&self.region, &self.availability_zone) {
+            (Some(region), Some(az)) => format!("{region}/{az}"),
+            (Some(region), None) => region.clone(),
+            (None, Some(az)) => az.clone(),
+            (None, None) => String::new(),
+        }
+    }
 }
