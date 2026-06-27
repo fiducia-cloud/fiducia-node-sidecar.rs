@@ -31,4 +31,16 @@ impl NodeMeta {
             version: std::env::var("FIDUCIA_NODE_VERSION").ok(),
         }
     }
+
+    /// The single failure-domain label the brain spreads replicas across.
+    ///
+    /// The brain spreads on **one** label, so it must be the *primary* domain to
+    /// keep distinct — the **region** (cluster), which is what makes the
+    /// cross-cluster "one replica per cluster, survive losing a whole cluster"
+    /// guarantee hold. (Appending the AZ here would let two replicas land in two
+    /// AZs of the *same* region, breaking that.) AZ/rack still travel in the
+    /// metadata for observability. Empty = unknown (treated as its own domain).
+    pub fn failure_domain(&self) -> String {
+        self.region.clone().unwrap_or_default()
+    }
 }

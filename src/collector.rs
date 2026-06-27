@@ -23,6 +23,7 @@ pub async fn ship_logs(_node_log_source: String, _sink: String) {
 /// own `/metrics` (annotated with node id / region / AZ).
 ///
 /// TODO: real HTTP GET `{node_url}/metrics`; merge with sidecar-local metrics.
+#[allow(dead_code)] // the observability half (logs/metrics) is still a stub
 pub async fn scrape_node_metrics(_node_url: &str) -> String {
     // TODO
     String::new()

@@ -3,7 +3,13 @@
 The per-node **operational sidecar** for [fiducia.cloud](https://fiducia.cloud).
 One runs alongside each [`fiducia-node`](https://github.com/fiducia-cloud/fiducia-node.rs)
 (same pod, localhost to the node) and owns everything *operational* so the node
-binary stays a pure coordination engine. This repository is a **skeleton**.
+binary stays a pure coordination engine.
+
+The **control-plane bridge is implemented**: on a timer it scrapes the local
+node's `/v1/status` and POSTs a heartbeat (address, failure domain = region, and
+the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`. The
+**observability half** (shipping logs, re-exposing `/metrics`) is still a stub —
+in practice a Vector/Fluent-Bit sidecar may own that instead.
 
 ## Why split it out
 
