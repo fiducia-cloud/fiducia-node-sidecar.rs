@@ -1,56 +1,113 @@
-//! Heartbeat bridge: local node → control plane (skeleton).
+//! Heartbeat bridge: local node → control plane.
 //!
 //! The sidecar is the node's voice to the brain. On a timer it scrapes the local
-//! node's `/v1/status` (which shards it hosts/leads, commit progress) and POSTs a
-//! compact heartbeat — plus the node's [`NodeMeta`] — to the brain's
+//! node's `/v1/status` (which shards it hosts/leads) and POSTs a compact heartbeat
+//! — plus the node's [`NodeMeta`] (address + failure domain) — to the brain's
 //! `/v1/nodes/{id}/heartbeat`. This keeps the **node decoupled** from the control
 //! plane: the node doesn't need to know the brain exists; the sidecar bridges.
 //!
-//! Caveat to decide later: if liveness is reported *only* by the sidecar, a dead
-//! sidecar looks like a dead node. Options: tie sidecar liveness to the node's,
-//! or keep a minimal direct node→brain liveness ping and let the sidecar own only
-//! the richer metadata. Flagged, not resolved.
-//!
-//! Skeleton: the loop is real; the two HTTP calls are stubbed (need a client).
+//! Caveat (flagged, not resolved): if liveness is reported *only* by the sidecar,
+//! a dead sidecar looks like a dead node. Either tie sidecar liveness to the
+//! node's, or keep a minimal direct node→brain ping and let the sidecar own only
+//! the richer metadata.
 
 use std::time::Duration;
+
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::meta::NodeMeta;
 
 /// Run the heartbeat loop forever.
 pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: Duration) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
-        match scrape_node_status(&node_url).await {
-            Some(status) => send_heartbeat(&brain_url, &meta, status).await,
+        match scrape_node_status(&client, &node_url).await {
+            Some(status) => {
+                if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status).await {
+                    tracing::warn!("heartbeat to brain {brain_url} failed: {err}");
+                }
+            }
             None => {
-                // Node unreachable: report it (or simply skip and let the brain's
-                // failure detector notice the missed heartbeats).
-                tracing::warn!("local node {} unreachable; skipping heartbeat", node_url);
+                // Node unreachable: skip and let the brain's failure detector
+                // notice the missed heartbeats (Healthy → Suspect → Dead).
+                tracing::warn!("local node {node_url} unreachable; skipping heartbeat");
             }
         }
     }
 }
 
 /// A compact view of what the local node reports about itself.
+#[derive(Debug, Default)]
 pub struct NodeStatusSummary {
     pub leading_shards: Vec<u32>,
     pub hosted_shards: Vec<u32>,
 }
 
-/// GET `{node_url}/v1/status` and distill it to what the brain needs.
-///
-/// TODO: real HTTP GET + parse the node's `consensus` block into the summary.
-async fn scrape_node_status(_node_url: &str) -> Option<NodeStatusSummary> {
-    // TODO
-    None
+/// The body the brain expects at `/v1/nodes/{id}/heartbeat` (mirrors the brain's
+/// `HeartbeatReport`; kept local so the two services share no compile dependency).
+#[derive(Debug, Serialize)]
+struct HeartbeatBody {
+    address: String,
+    failure_domain: String,
+    hosted_shards: Vec<u32>,
+    leading_shards: Vec<u32>,
 }
 
-/// POST the heartbeat (+ metadata) to the brain.
-///
-/// TODO: real HTTP POST to `{brain_url}/v1/nodes/{meta.node_id}/heartbeat` with a
-/// body carrying `meta` and the reported shard summary.
-async fn send_heartbeat(_brain_url: &str, _meta: &NodeMeta, _status: NodeStatusSummary) {
-    // TODO
+/// `GET {node_url}/v1/status` → distill the `consensus` block to what the brain
+/// needs (which shards this node hosts, and which it leads).
+async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
+    let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
+    let body: Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    let consensus = &body["consensus"];
+
+    let leading_shards = u32_array(&consensus["leading_shards"]);
+    let hosted_shards = consensus["shards"]
+        .as_array()
+        .map(|shards| {
+            shards
+                .iter()
+                .filter_map(|s| s["shard_id"].as_u64().map(|n| n as u32))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(NodeStatusSummary {
+        leading_shards,
+        hosted_shards,
+    })
+}
+
+/// `POST {brain_url}/v1/nodes/{node_id}/heartbeat` with metadata + shard summary.
+async fn send_heartbeat(
+    client: &reqwest::Client,
+    brain_url: &str,
+    meta: &NodeMeta,
+    status: NodeStatusSummary,
+) -> Result<(), reqwest::Error> {
+    let url = format!(
+        "{}/v1/nodes/{}/heartbeat",
+        brain_url.trim_end_matches('/'),
+        meta.node_id
+    );
+    let body = HeartbeatBody {
+        address: meta.address.clone(),
+        failure_domain: meta.failure_domain(),
+        hosted_shards: status.hosted_shards,
+        leading_shards: status.leading_shards,
+    };
+    client.post(url).json(&body).send().await?.error_for_status()?;
+    Ok(())
+}
+
+fn u32_array(value: &Value) -> Vec<u32> {
+    value
+        .as_array()
+        .map(|xs| xs.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+        .unwrap_or_default()
 }
