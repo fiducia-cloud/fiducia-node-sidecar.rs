@@ -46,6 +46,7 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
 #[derive(Debug, Default)]
 pub struct NodeStatusSummary {
     pub leading_shards: Vec<u32>,
+    pub following_shards: Vec<u32>,
     pub hosted_shards: Vec<u32>,
 }
 
@@ -70,19 +71,30 @@ async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<
 fn status_from_value(body: &Value) -> NodeStatusSummary {
     let consensus = &body["consensus"];
 
-    let leading_shards = u32_array(&consensus["leading_shards"]);
-    let hosted_shards = consensus["shards"]
-        .as_array()
-        .map(|shards| {
-            shards
-                .iter()
-                .filter_map(|s| s["shard_id"].as_u64().map(|n| n as u32))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut leading_shards = u32_array(&consensus["leading_shards"]);
+    if leading_shards.is_empty() {
+        leading_shards = shard_ids_by_role(consensus, "leader");
+    }
+    let mut following_shards = u32_array(&consensus["following_shards"]);
+    if following_shards.is_empty() {
+        following_shards = shard_ids_by_role(consensus, "follower");
+    }
+    let mut hosted_shards = u32_array(&consensus["hosted_shards"]);
+    if hosted_shards.is_empty() {
+        hosted_shards = shard_ids_from_rows(consensus);
+    }
+    if hosted_shards.is_empty() {
+        hosted_shards.extend(leading_shards.iter().copied());
+        hosted_shards.extend(following_shards.iter().copied());
+    }
+
+    sort_dedup(&mut leading_shards);
+    sort_dedup(&mut following_shards);
+    sort_dedup(&mut hosted_shards);
 
     NodeStatusSummary {
         leading_shards,
+        following_shards,
         hosted_shards,
     }
 }
@@ -119,10 +131,40 @@ fn u32_array(value: &Value) -> Vec<u32> {
         .as_array()
         .map(|xs| {
             xs.iter()
-                .filter_map(|x| x.as_u64().map(|n| n as u32))
+                .filter_map(|x| x.as_u64().and_then(|n| u32::try_from(n).ok()))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn shard_ids_from_rows(consensus: &Value) -> Vec<u32> {
+    consensus["shards"]
+        .as_array()
+        .map(|shards| {
+            shards
+                .iter()
+                .filter_map(|s| s["shard_id"].as_u64().and_then(|n| u32::try_from(n).ok()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn shard_ids_by_role(consensus: &Value, role: &str) -> Vec<u32> {
+    consensus["shards"]
+        .as_array()
+        .map(|shards| {
+            shards
+                .iter()
+                .filter(|s| s["role"].as_str() == Some(role))
+                .filter_map(|s| s["shard_id"].as_u64().and_then(|n| u32::try_from(n).ok()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sort_dedup(shards: &mut Vec<u32>) {
+    shards.sort_unstable();
+    shards.dedup();
 }
 
 #[cfg(test)]
@@ -134,33 +176,57 @@ mod tests {
     fn status_parser_extracts_leading_and_hosted_shards() {
         let status = status_from_value(&json!({
             "consensus": {
-                "leading_shards": [0, 2],
+                "hosted_shards": [3, 2, 1, 0, 0],
+                "leading_shards": [2, 0, 2],
+                "following_shards": [3, 1],
                 "shards": [
                     { "shard_id": 0, "role": "leader" },
                     { "shard_id": 1, "role": "follower" },
-                    { "shard_id": 2, "role": "leader" }
+                    { "shard_id": 2, "role": "leader" },
+                    { "shard_id": 3, "role": "follower" }
                 ]
             }
         }));
 
         assert_eq!(status.leading_shards, vec![0, 2]);
-        assert_eq!(status.hosted_shards, vec![0, 1, 2]);
+        assert_eq!(status.following_shards, vec![1, 3]);
+        assert_eq!(status.hosted_shards, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn status_parser_derives_roles_from_shard_rows_when_compact_fields_are_missing() {
+        let status = status_from_value(&json!({
+            "consensus": {
+                "shards": [
+                    { "shard_id": 7, "role": "follower" },
+                    { "shard_id": 5, "role": "leader" },
+                    { "shard_id": 6, "role": "follower" },
+                    { "shard_id": 4, "role": "leader" }
+                ]
+            }
+        }));
+
+        assert_eq!(status.leading_shards, vec![4, 5]);
+        assert_eq!(status.following_shards, vec![6, 7]);
+        assert_eq!(status.hosted_shards, vec![4, 5, 6, 7]);
     }
 
     #[test]
     fn status_parser_tolerates_missing_or_malformed_consensus_fields() {
         let status = status_from_value(&json!({
             "consensus": {
-                "leading_shards": ["bad", 3],
+                "leading_shards": ["bad", 3, 4294967296u64],
                 "shards": [
                     { "shard_id": "bad" },
-                    { "shard_id": 4 },
+                    { "shard_id": 4, "role": "follower" },
+                    { "shard_id": 4294967296u64, "role": "follower" },
                     {}
                 ]
             }
         }));
 
         assert_eq!(status.leading_shards, vec![3]);
+        assert_eq!(status.following_shards, vec![4]);
         assert_eq!(status.hosted_shards, vec![4]);
     }
 }
