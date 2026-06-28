@@ -127,6 +127,14 @@ async fn send_heartbeat(
     Ok(())
 }
 
+/// Wall-clock milliseconds since the Unix epoch (seeds the heartbeat sequence).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn u32_array(value: &Value) -> Vec<u32> {
     value
         .as_array()
