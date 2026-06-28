@@ -109,12 +109,23 @@ async fn meta_handler(node_meta: NodeMeta) -> Json<Value> {
     Json(json!(node_meta))
 }
 
-/// `GET /metrics` — re-exposed node metrics + sidecar-local metrics.
-///
-/// TODO: merge `collector::scrape_node_metrics(node_url)` with sidecar metrics in
-/// Prometheus exposition format.
-async fn metrics() -> String {
-    String::new()
+/// `GET /metrics` — re-exposed node metrics + sidecar-local metrics in Prometheus
+/// exposition format. Scrapes the local node's `/metrics` and appends a small
+/// sidecar-up gauge so the endpoint is always non-empty even if the node is down.
+async fn metrics(node_url: String) -> String {
+    let node_metrics = collector::scrape_node_metrics(&node_url).await;
+    let node_up = u8::from(!node_metrics.is_empty());
+    let mut out = String::new();
+    out.push_str("# HELP fiducia_sidecar_node_up Whether the local node's /metrics was scraped.\n");
+    out.push_str("# TYPE fiducia_sidecar_node_up gauge\n");
+    out.push_str(&format!("fiducia_sidecar_node_up {node_up}\n"));
+    if !node_metrics.is_empty() {
+        out.push_str(&node_metrics);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 #[cfg(test)]
