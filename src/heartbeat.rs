@@ -65,6 +65,9 @@ struct HeartbeatBody {
     failure_domain: String,
     hosted_shards: Vec<u32>,
     leading_shards: Vec<u32>,
+    /// Monotonic per-send sequence so the brain can drop reordered/duplicated
+    /// heartbeats (it ignores any whose `seq` is not newer than the last seen).
+    seq: u64,
 }
 
 /// `GET {node_url}/v1/status` → distill the `consensus` block to what the brain
