@@ -11,7 +11,8 @@
 //! node's, or keep a minimal direct node→brain ping and let the sidecar own only
 //! the richer metadata.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -24,12 +25,19 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap_or_default();
+    // Monotonic heartbeat sequence. Seeded from the wall clock at startup so a
+    // sidecar restart resumes ABOVE its previous numbers (a restart can't be
+    // mistaken for a stale heartbeat), then incremented once per send. The brain
+    // ignores any heartbeat whose seq is not strictly newer than the last seen,
+    // so reordered/duplicated deliveries can't revert newer reported state.
+    let seq = AtomicU64::new(now_ms());
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
         match scrape_node_status(&client, &node_url).await {
             Some(status) => {
-                if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status).await {
+                let n = seq.fetch_add(1, Ordering::Relaxed);
+                if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status, n).await {
                     tracing::warn!("heartbeat to brain {brain_url} failed: {err}");
                 }
             }
