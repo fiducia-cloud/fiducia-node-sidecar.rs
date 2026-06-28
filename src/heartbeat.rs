@@ -46,6 +46,7 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
 #[derive(Debug, Default)]
 pub struct NodeStatusSummary {
     pub leading_shards: Vec<u32>,
+    #[cfg(test)]
     pub following_shards: Vec<u32>,
     pub hosted_shards: Vec<u32>,
 }
@@ -94,6 +95,7 @@ fn status_from_value(body: &Value) -> NodeStatusSummary {
 
     NodeStatusSummary {
         leading_shards,
+        #[cfg(test)]
         following_shards,
         hosted_shards,
     }
@@ -228,5 +230,44 @@ mod tests {
         assert_eq!(status.leading_shards, vec![3]);
         assert_eq!(status.following_shards, vec![4]);
         assert_eq!(status.hosted_shards, vec![4]);
+    }
+
+    #[test]
+    fn status_parser_uses_role_arrays_as_hosted_fallback() {
+        let status = status_from_value(&json!({
+            "consensus": {
+                "leading_shards": [9, 2, 9],
+                "following_shards": [3, 2, 8]
+            }
+        }));
+
+        assert_eq!(status.leading_shards, vec![2, 9]);
+        assert_eq!(status.following_shards, vec![2, 3, 8]);
+        assert_eq!(status.hosted_shards, vec![2, 3, 8, 9]);
+    }
+
+    #[test]
+    fn status_parser_ignores_unknown_shard_roles() {
+        let status = status_from_value(&json!({
+            "consensus": {
+                "shards": [
+                    { "shard_id": 11, "role": "leader" },
+                    { "shard_id": 12, "role": "candidate" },
+                    { "shard_id": 13, "role": "follower" },
+                    { "shard_id": 14, "role": null }
+                ]
+            }
+        }));
+
+        assert_eq!(status.leading_shards, vec![11]);
+        assert_eq!(status.following_shards, vec![13]);
+        assert_eq!(status.hosted_shards, vec![11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn u32_array_keeps_only_unsigned_u32_values() {
+        let shards = u32_array(&json!([4, -1, "5", 4294967295u64, 4294967296u64, null]));
+
+        assert_eq!(shards, vec![4, u32::MAX]);
     }
 }
