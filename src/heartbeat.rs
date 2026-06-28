@@ -104,6 +104,7 @@ async fn send_heartbeat(
     brain_url: &str,
     meta: &NodeMeta,
     status: NodeStatusSummary,
+    seq: u64,
 ) -> Result<(), reqwest::Error> {
     let url = format!(
         "{}/v1/nodes/{}/heartbeat",
@@ -115,6 +116,7 @@ async fn send_heartbeat(
         failure_domain: meta.failure_domain(),
         hosted_shards: status.hosted_shards,
         leading_shards: status.leading_shards,
+        seq,
     };
     client
         .post(url)
