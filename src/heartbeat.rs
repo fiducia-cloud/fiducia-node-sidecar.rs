@@ -155,9 +155,7 @@ async fn send_heartbeat(
         leading_shards: status.leading_shards,
         seq,
     };
-    client
-        .post(url)
-        .json(&body)
+    attach(client.post(url).json(&body))
         .send()
         .await?
         .error_for_status()?;
