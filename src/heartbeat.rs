@@ -11,7 +11,8 @@
 //! node's, or keep a minimal direct node→brain ping and let the sidecar own only
 //! the richer metadata.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -24,12 +25,19 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap_or_default();
+    // Monotonic heartbeat sequence. Seeded from the wall clock at startup so a
+    // sidecar restart resumes ABOVE its previous numbers (a restart can't be
+    // mistaken for a stale heartbeat), then incremented once per send. The brain
+    // ignores any heartbeat whose seq is not strictly newer than the last seen,
+    // so reordered/duplicated deliveries can't revert newer reported state.
+    let seq = AtomicU64::new(now_ms());
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
         match scrape_node_status(&client, &node_url).await {
             Some(status) => {
-                if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status).await {
+                let n = seq.fetch_add(1, Ordering::Relaxed);
+                if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status, n).await {
                     tracing::warn!("heartbeat to brain {brain_url} failed: {err}");
                 }
             }
@@ -57,6 +65,9 @@ struct HeartbeatBody {
     failure_domain: String,
     hosted_shards: Vec<u32>,
     leading_shards: Vec<u32>,
+    /// Monotonic per-send sequence so the brain can drop reordered/duplicated
+    /// heartbeats (it ignores any whose `seq` is not newer than the last seen).
+    seq: u64,
 }
 
 /// `GET {node_url}/v1/status` → distill the `consensus` block to what the brain
@@ -93,6 +104,7 @@ async fn send_heartbeat(
     brain_url: &str,
     meta: &NodeMeta,
     status: NodeStatusSummary,
+    seq: u64,
 ) -> Result<(), reqwest::Error> {
     let url = format!(
         "{}/v1/nodes/{}/heartbeat",
@@ -104,6 +116,7 @@ async fn send_heartbeat(
         failure_domain: meta.failure_domain(),
         hosted_shards: status.hosted_shards,
         leading_shards: status.leading_shards,
+        seq,
     };
     client
         .post(url)
@@ -112,6 +125,14 @@ async fn send_heartbeat(
         .await?
         .error_for_status()?;
     Ok(())
+}
+
+/// Wall-clock milliseconds since the Unix epoch (seeds the heartbeat sequence).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn u32_array(value: &Value) -> Vec<u32> {
