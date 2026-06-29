@@ -99,7 +99,7 @@ struct HeartbeatBody {
 /// needs (which shards this node hosts, and which it leads).
 async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
     let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
-    let body: Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    let body: Value = attach(client.get(url)).send().await.ok()?.json().await.ok()?;
     Some(status_from_value(&body))
 }
 
