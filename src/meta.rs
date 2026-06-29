@@ -1,4 +1,4 @@
-//! Node metadata the sidecar reports on behalf of its node (skeleton).
+//! Node metadata the sidecar reports on behalf of its node.
 //!
 //! Static facts about the node that the control plane needs but that the node
 //! itself shouldn't have to care about — most importantly its **failure domain**

@@ -10,9 +10,8 @@
 //!   * **observability** — ship the node's logs and re-expose its metrics to the
 //!     telemetry stack (see `collector.rs`).
 //!
-//! This is a **skeleton**: the loops and HTTP surface are wired; the calls to the
-//! node and brain (and the log/metric shipping) are stubbed pending an HTTP
-//! client.
+//! The heartbeat loop talks to the local node and brain; the observability path
+//! ships configured log files and re-exposes the local node metrics endpoint.
 
 mod collector;
 mod heartbeat;
@@ -67,20 +66,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         interval,
     ));
 
-    // Observability: ship logs + scrape metrics (stubs).
+    // Observability: ship logs and re-expose scraped node metrics.
     tokio::spawn(collector::ship_logs(
         std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
         std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
     ));
+    let metrics_node_url = node_url.clone();
 
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(health))
         .route("/meta", get(move || meta_handler(node_meta.clone())))
+<<<<<<< HEAD
         .route("/metrics", {
             let node_url = node_url.clone();
             get(move || metrics(node_url.clone()))
         })
+=======
+        .route("/metrics", get(move || metrics(metrics_node_url.clone())))
+>>>>>>> origin/main
         // Hardening stack (outermost last): catch handler panics → 500, bound
         // request time, and cap body size.
         .layer(TraceLayer::new_for_http())
@@ -109,6 +113,7 @@ async fn meta_handler(node_meta: NodeMeta) -> Json<Value> {
     Json(json!(node_meta))
 }
 
+<<<<<<< HEAD
 /// `GET /metrics` — re-exposed node metrics + sidecar-local metrics in Prometheus
 /// exposition format. Scrapes the local node's `/metrics` and appends a small
 /// sidecar-up gauge so the endpoint is always non-empty even if the node is down.
@@ -126,6 +131,17 @@ async fn metrics(node_url: String) -> String {
         }
     }
     out
+=======
+/// `GET /metrics` — re-exposed node metrics + sidecar-local metrics.
+async fn metrics(node_url: String) -> String {
+    let node_metrics = collector::scrape_node_metrics(&node_url).await;
+    format!(
+        "# HELP fiducia_sidecar_up Whether the fiducia node sidecar is serving.\n\
+         # TYPE fiducia_sidecar_up gauge\n\
+         fiducia_sidecar_up 1\n\
+         {node_metrics}"
+    )
+>>>>>>> origin/main
 }
 
 #[cfg(test)]
