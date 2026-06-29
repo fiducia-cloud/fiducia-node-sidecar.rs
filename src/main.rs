@@ -77,14 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/healthz", get(health))
         .route("/readyz", get(health))
         .route("/meta", get(move || meta_handler(node_meta.clone())))
-<<<<<<< HEAD
-        .route("/metrics", {
-            let node_url = node_url.clone();
-            get(move || metrics(node_url.clone()))
-        })
-=======
         .route("/metrics", get(move || metrics(metrics_node_url.clone())))
->>>>>>> origin/main
         // Hardening stack (outermost last): catch handler panics → 500, bound
         // request time, and cap body size.
         .layer(TraceLayer::new_for_http())
