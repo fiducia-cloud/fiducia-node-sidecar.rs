@@ -12,9 +12,10 @@
 //! (For heavy production use you may prefer a dedicated Vector/Fluent Bit
 //! sidecar; this keeps the single-binary deployment self-contained.)
 
+use std::io::SeekFrom;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 /// HTTP client for scraping the node and POSTing to the log sink. Short timeout —
 /// telemetry must never block the data plane.
@@ -25,78 +26,120 @@ fn client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Tail the local node's log file and forward each new line to the log backend.
+/// Tail the local node's logs and forward them to the log backend.
 ///
-/// `node_log_source` is a path to follow; `sink` is an HTTP endpoint that accepts
-/// newline-delimited log lines (POST). Empty values disable the respective half
-/// (e.g. when an external log agent owns shipping). Reopens the file if it
-/// disappears (log rotation) and never exits — it's a background task.
+/// `node_log_source` is a path to follow; `sink` is `stdout`/`stderr`/`tracing`
+/// or an HTTP(S) endpoint that accepts the chunk (POST). Empty values disable
+/// shipping (e.g. when an external log agent owns it). Tracks a byte offset across
+/// reads, resets it on truncation (log rotation), and never exits — it's a
+/// background task. Interval is `FIDUCIA_LOG_SHIP_INTERVAL_MS` (default 5s).
 pub async fn ship_logs(node_log_source: String, sink: String) {
-    if node_log_source.is_empty() {
-        tracing::info!("collector: FIDUCIA_NODE_LOG_SOURCE unset — log shipping disabled");
+    if node_log_source.trim().is_empty() || sink.trim().is_empty() {
+        tracing::info!("log shipping disabled: FIDUCIA_NODE_LOG_SOURCE or FIDUCIA_LOG_SINK empty");
         return;
     }
-    let client = client();
+
+    let interval = Duration::from_millis(
+        std::env::var("FIDUCIA_LOG_SHIP_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(5_000),
+    );
+    let mut offset = 0u64;
+
     loop {
-        match tokio::fs::File::open(&node_log_source).await {
-            Ok(file) => {
-                let mut lines = BufReader::new(file).lines();
-                loop {
-                    match lines.next_line().await {
-                        Ok(Some(line)) => forward_log_line(&client, &sink, line).await,
-                        // EOF: wait for more to be appended, then keep reading.
-                        Ok(None) => tokio::time::sleep(Duration::from_millis(500)).await,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "collector: log read error; reopening");
-                            break;
-                        }
-                    }
+        match read_new_log_bytes(&node_log_source, offset).await {
+            Ok((next_offset, chunk)) => {
+                offset = next_offset;
+                if !chunk.is_empty() {
+                    ship_log_chunk(&node_log_source, &sink, chunk).await;
                 }
             }
-            Err(e) => {
-                tracing::debug!(error = %e, source = %node_log_source, "collector: log file not open; retrying");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    source = %node_log_source,
+                    "failed to read node log source"
+                );
             }
         }
-    }
-}
-
-/// Ship one log line to the sink, or print it locally when no sink is configured.
-async fn forward_log_line(client: &reqwest::Client, sink: &str, line: String) {
-    if sink.is_empty() {
-        // No backend wired: surface on the sidecar's own stdout so it's still
-        // captured by whatever scrapes container logs.
-        tracing::info!(target: "node_log", "{line}");
-        return;
-    }
-    if let Err(e) = client.post(sink).body(line).send().await {
-        tracing::warn!(error = %e, sink, "collector: failed to ship log line");
+        tokio::time::sleep(interval).await;
     }
 }
 
 /// Scrape the local node's Prometheus metrics, annotated with this node's
 /// identity so the metrics are attributable once merged.
 ///
-/// Returns the node's exposition text with a sidecar comment header, or an empty
-/// string if the node is unreachable (the sidecar's own `/metrics` then serves
-/// just its local metrics).
+/// Prefixes a `fiducia_sidecar_node_scrape_up` gauge (1 when the node was
+/// scraped, 0 otherwise, with the failure reason as a comment) so scrape failures
+/// are alertable, then the node's own exposition text on success.
 pub async fn scrape_node_metrics(node_url: &str) -> String {
     let url = format!("{}/metrics", node_url.trim_end_matches('/'));
-    match client().get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.text().await {
-            Ok(body) => body,
-            Err(e) => {
-                tracing::warn!(error = %e, "collector: node /metrics body read failed");
-                String::new()
-            }
-        },
-        Ok(resp) => {
-            tracing::debug!(status = %resp.status(), "collector: node /metrics non-200");
-            String::new()
+    match client().get(url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let body = response.text().await.unwrap_or_default();
+            format!(
+                "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
+                 # TYPE fiducia_sidecar_node_scrape_up gauge\n\
+                 fiducia_sidecar_node_scrape_up 1\n\
+                 {body}"
+            )
         }
-        Err(e) => {
-            tracing::debug!(error = %e, url, "collector: node /metrics unreachable");
-            String::new()
+        Ok(response) => format!(
+            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
+             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
+             fiducia_sidecar_node_scrape_up 0\n\
+             # node metrics scrape returned HTTP {}\n",
+            response.status().as_u16()
+        ),
+        Err(err) => format!(
+            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
+             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
+             fiducia_sidecar_node_scrape_up 0\n\
+             # node metrics scrape error: {}\n",
+            sanitize_metric_comment(&err.to_string())
+        ),
+    }
+}
+
+async fn read_new_log_bytes(
+    path: &str,
+    offset: u64,
+) -> Result<(u64, String), Box<dyn std::error::Error + Send + Sync>> {
+    let metadata = tokio::fs::metadata(path).await?;
+    let offset = if metadata.len() < offset { 0 } else { offset };
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(SeekFrom::Start(offset)).await?;
+    let mut chunk = String::new();
+    file.read_to_string(&mut chunk).await?;
+    Ok((offset.saturating_add(chunk.len() as u64), chunk))
+}
+
+async fn ship_log_chunk(source: &str, sink: &str, chunk: String) {
+    match sink {
+        "stdout" | "stderr" | "tracing" => {
+            tracing::info!(source, bytes = chunk.len(), log_chunk = %chunk, "node log chunk");
+        }
+        sink if sink.starts_with("http://") || sink.starts_with("https://") => {
+            if let Err(err) = client()
+                .post(sink)
+                .json(&serde_json::json!({ "source": source, "message": chunk }))
+                .send()
+                .await
+                .and_then(|response| response.error_for_status())
+            {
+                tracing::warn!(error = %err, sink, "failed to ship node log chunk");
+            }
+        }
+        _ => {
+            tracing::warn!(
+                sink,
+                "unsupported log sink; use stdout, stderr, tracing, or HTTP(S)"
+            );
         }
     }
+}
+
+fn sanitize_metric_comment(value: &str) -> String {
+    value.replace('\n', " ")
 }
