@@ -19,6 +19,29 @@ use serde_json::Value;
 
 use crate::meta::NodeMeta;
 
+/// The cluster trusted-hop secret, read once. The sidecar talks to two guarded
+/// `/v1` planes — the local node's (`GET /v1/status`) and the brain's (`POST
+/// /v1/nodes/{id}/heartbeat`) — both of which require this header when set.
+fn internal_secret() -> Option<&'static str> {
+    static SECRET: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SECRET
+        .get_or_init(|| {
+            std::env::var("FIDUCIA_INTERNAL_SECRET")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .as_deref()
+}
+
+/// Attach the trusted-hop header to an outbound request when the secret is set.
+fn attach(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match internal_secret() {
+        Some(secret) => builder.header("x-fiducia-internal-auth", secret),
+        None => builder,
+    }
+}
+
 /// Run the heartbeat loop forever.
 pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: Duration) {
     let client = reqwest::Client::builder()
@@ -76,7 +99,7 @@ struct HeartbeatBody {
 /// needs (which shards this node hosts, and which it leads).
 async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
     let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
-    let body: Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    let body: Value = attach(client.get(url)).send().await.ok()?.json().await.ok()?;
     Some(status_from_value(&body))
 }
 
@@ -132,9 +155,7 @@ async fn send_heartbeat(
         leading_shards: status.leading_shards,
         seq,
     };
-    client
-        .post(url)
-        .json(&body)
+    attach(client.post(url).json(&body))
         .send()
         .await?
         .error_for_status()?;
