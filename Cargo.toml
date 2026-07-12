@@ -1,3 +1,4 @@
+# Crate manifest: package metadata and dependencies for fiducia-node-sidecar.
 [package]
 name = "fiducia-node-sidecar"
 version = "0.1.0"
