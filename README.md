@@ -60,18 +60,93 @@ shard's replicas so one rack/zone loss can't take a quorum.
 | `src/meta.rs`     | node identity + failure-domain metadata                 |
 | `src/collector.rs`| log shipping + metric scraping                          |
 
-## Run locally
+## Configuration
+
+The sidecar is configured entirely from the environment. `FIDUCIA_INTERNAL_SECRET`
+is **required**: the process refuses to start without it (see *Trust boundary*).
+
+| Variable | Type | Default | Secret? | Meaning |
+|----------|------|---------|:-------:|---------|
+| `FIDUCIA_INTERNAL_SECRET` | string | *(none — required)* | **yes** | Trusted-hop auth secret sent as `x-fiducia-internal-auth` on every node/brain `/v1` call. Startup fails closed if unset/empty. |
+| `PORT` | integer | `8091` | no | TCP port the sidecar HTTP surface listens on. |
+| `FIDUCIA_NODE_ID` | string | `node-a` | no | Stable identifier of the local node. |
+| `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node to scrape (`/v1/status`, `/metrics`). |
+| `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to. |
+| `FIDUCIA_HEARTBEAT_MS` | integer | `2000` | no | Heartbeat interval, milliseconds. |
+| `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
+| `FIDUCIA_REGION` | string | *(unset)* | no | Region — the primary failure domain the brain spreads replicas across. |
+| `FIDUCIA_AZ` | string | *(unset)* | no | Availability zone (failure-domain metadata). |
+| `FIDUCIA_RACK` | string | *(unset)* | no | Rack (failure-domain metadata). |
+| `FIDUCIA_NODE_VERSION` | string | *(unset)* | no | Reported node version (metadata). |
+| `FIDUCIA_NODE_LOG_SOURCE` | string | *(unset)* | no | Path to the node log file to tail and ship. Empty disables log shipping. |
+| `FIDUCIA_LOG_SINK` | string | *(unset)* | no | Log sink: `stdout`, `stderr`, `tracing`, or an HTTP(S) endpoint. Empty disables log shipping. |
+| `FIDUCIA_LOG_SHIP_INTERVAL_MS` | integer | `5000` | no | Log-shipping poll interval, milliseconds. |
+
+## Trust boundary
+
+`FIDUCIA_INTERNAL_SECRET` authenticates the sidecar's **outbound** trusted-hop
+calls to the two guarded `/v1` planes — the local node (`GET /v1/status`) and the
+brain (`POST /v1/nodes/{id}/heartbeat`) — attached as the `x-fiducia-internal-auth`
+header. It is **secure by default**: `main.rs` requires it at startup and the
+process refuses to boot (exits with an error) if it is unset or blank, so the
+sidecar can never silently emit unauthenticated heartbeats. The secret is never
+logged and never compared in-process (the sidecar only *presents* it), so there
+is no timing-comparison surface here.
+
+The sidecar's own HTTP surface (`/healthz`, `/readyz`, `/meta`, `/metrics`) is
+unauthenticated by design: it exposes only local liveness and telemetry and is
+meant to be reached over pod-local networking / a scrape ACL, never the public
+internet.
+
+## Run locally (single node)
+
+Provide a dev secret so the sidecar starts; everything else can default:
 
 ```bash
+FIDUCIA_INTERNAL_SECRET=dev-secret \
 FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
 FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
 ```
 
-Env: `PORT`, `FIDUCIA_INTERNAL_SECRET` (required), `FIDUCIA_NODE_ID`,
-`FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
-`FIDUCIA_HEARTBEAT_MS`, `FIDUCIA_NODE_ADDRESS`, `FIDUCIA_REGION`, `FIDUCIA_AZ`,
-`FIDUCIA_RACK`, `FIDUCIA_NODE_VERSION`, `FIDUCIA_NODE_LOG_SOURCE`,
-`FIDUCIA_LOG_SINK`, and `FIDUCIA_LOG_SHIP_INTERVAL_MS`.
+Use a throwaway value for `FIDUCIA_INTERNAL_SECRET` in dev; in production it must
+match the node's and brain's configured trusted-hop secret and be delivered as a
+real secret (never committed, never a shell-history literal).
+
+## flags-2-env
+
+CLI flags can be mapped to the `FIDUCIA_*`/`PORT` env vars above through the
+pinned [`ORESoftware/flags-2-env`](https://github.com/ORESoftware/flags-2-env)
+parser (vendored as a submodule). The schema lives in `.cli-flags.toml` and is
+audited in CI (`.github/workflows/cli-flags.yml`).
+
+```bash
+git submodule update --init --recursive
+make -C vendor/flags-2-env all   # if the prebuilt binary isn't present
+scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 \
+  --internal-secret=dev-secret -- cargo run
+```
+
+`scripts/with-flags2env.sh` runs `flags2env` against `.cli-flags.toml`, exports
+the resulting env map, then execs the given command.
+
+## Security
+
+Hardening applied / verified:
+
+- **Fail-closed auth secret** — `FIDUCIA_INTERNAL_SECRET` is required at startup;
+  the sidecar refuses to run (and therefore never sends unauthenticated
+  outbound calls) when it is missing or blank.
+- **Request hardening stack** — every endpoint runs behind a body-size cap
+  (`RequestBodyLimitLayer`, 64 KiB), a request timeout (`TimeoutLayer`, 15 s),
+  and `CatchPanicLayer` so a panicking handler returns `500` instead of dropping
+  the connection.
+- **No unsafe / no reachable panics** — no `unsafe` blocks; network-facing paths
+  use fallible parsing and `unwrap_or_*` fallbacks rather than `unwrap()/expect()`.
+- **No timing-unsafe secret comparison** — the secret is only presented outbound,
+  never compared in-process.
+
+Accepted advisories: none. `cargo audit` is clean (0 vulnerabilities across the
+dependency tree at the last scan).
 
 ## Related
 
