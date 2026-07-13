@@ -148,17 +148,17 @@ async fn meta_handler(node_meta: NodeMeta) -> Json<Value> {
     Json(json!(node_meta))
 }
 
-/// `GET /metrics` — re-exposed node metrics + sidecar-local metrics. Prefixes a
-/// `fiducia_sidecar_up` gauge (the sidecar is serving); the scraped node metrics
-/// carry their own `fiducia_sidecar_node_scrape_up` gauge so node-down is visible
-/// even when this endpoint is up.
-async fn metrics(node_url: String) -> String {
-    let node_metrics = collector::scrape_node_metrics(&node_url).await;
+/// `GET /metrics` — sidecar-local metrics + the translated node/brain scrape.
+/// Prefixes a `fiducia_sidecar_up` gauge (this endpoint is serving); the exporter
+/// then appends `fiducia_sidecar_scrape_up{target=...}` so a failed upstream fetch
+/// is visible as `up=0` even while this endpoint returns 200.
+async fn metrics(exporter: Arc<Exporter>) -> String {
+    let body = exporter.render().await;
     format!(
         "# HELP fiducia_sidecar_up Whether the fiducia node sidecar is serving.\n\
          # TYPE fiducia_sidecar_up gauge\n\
          fiducia_sidecar_up 1\n\
-         {node_metrics}"
+         {body}"
     )
 }
 
