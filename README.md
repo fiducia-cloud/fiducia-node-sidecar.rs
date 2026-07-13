@@ -116,7 +116,7 @@ real secret (never committed, never a shell-history literal).
 
 The sidecar consumes generated contracts from the sibling
 `fiducia-interfaces` repository. CI and the Dockerfile pin it to commit
-`5f2c5279ee19941024455b2843256872485bac82`; neither follows a moving branch.
+`487e470c45ab5851e8f6f3b1dc048fe067fbf408`; neither follows a moving branch.
 The Docker build checks the commit out detached and verifies that its full
 `HEAD` equals `INTERFACES_SHA`, so branches, tags, and abbreviated hashes fail
 closed. Update the Dockerfile argument and CI checkout `ref` together when
