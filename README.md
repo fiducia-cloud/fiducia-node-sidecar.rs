@@ -9,11 +9,14 @@ The **control-plane bridge is implemented**: on a timer it scrapes the local
 node's `/v1/status` and POSTs a heartbeat (address, failure domain = region, and
 the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`.
 
-The observability path is implemented too: it tails a configured node log,
-forwards new chunks to tracing or an HTTP sink, scrapes the node's Prometheus
-endpoint, and re-exposes it with sidecar/node scrape-health gauges. A dedicated
-Vector or Fluent Bit sidecar can replace log shipping in larger installs by
-leaving the log source and sink unset.
+The observability path is implemented too: it tails a configured node log and
+forwards new chunks to tracing or an HTTP sink, and it exposes a Prometheus
+`/metrics` endpoint that **translates** the node's structured observability API
+(`/v1/observe/shards`, `/v1/observe/metrics`, `/readyz`) — or, in `brain` mode,
+the brain's `/v1/status` rollup — into `fiducia_`-prefixed metric families. (The
+node has no `/metrics` route of its own to re-expose; the sidecar renders one from
+the JSON introspection instead.) A dedicated Vector or Fluent Bit sidecar can
+replace log shipping in larger installs by leaving the log source and sink unset.
 
 ## Why split it out
 
