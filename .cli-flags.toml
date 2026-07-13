@@ -1,0 +1,96 @@
+# Non-secret command-line configuration for fiducia-node-sidecar. The shared
+# internal authentication secret remains environment-only.
+[help]
+url = "https://github.com/fiducia-cloud/fiducia-node-sidecar.rs"
+columns = ["options", "env", "type", "description"]
+
+[parse]
+allow_unknown = false
+
+[env]
+ignore = ["FIDUCIA_INTERNAL_SECRET"]
+
+[flags.port]
+env = "PORT"
+aliases = ["port"]
+short = "p"
+type = "integer"
+help = "HTTP listen port."
+
+[flags.node-id]
+env = "FIDUCIA_NODE_ID"
+aliases = ["node-id"]
+type = "string"
+help = "Stable data-plane node identifier."
+
+[flags.node-url]
+env = "FIDUCIA_NODE_URL"
+aliases = ["node-url"]
+type = "string"
+help = "Local data-plane node base URL."
+
+[flags.brain-url]
+env = "FIDUCIA_BRAIN_URL"
+aliases = ["brain-url"]
+type = "string"
+help = "Brain service base URL."
+
+[flags.heartbeat-ms]
+env = "FIDUCIA_HEARTBEAT_MS"
+aliases = ["heartbeat-ms"]
+type = "integer"
+help = "Heartbeat interval in milliseconds."
+
+[flags.node-address]
+env = "FIDUCIA_NODE_ADDRESS"
+aliases = ["node-address"]
+type = "string"
+help = "Advertised node address."
+
+[flags.region]
+env = "FIDUCIA_REGION"
+aliases = ["region"]
+type = "string"
+help = "Cloud region."
+
+[flags.az]
+env = "FIDUCIA_AZ"
+aliases = ["az"]
+type = "string"
+help = "Availability zone."
+
+[flags.rack]
+env = "FIDUCIA_RACK"
+aliases = ["rack"]
+type = "string"
+help = "Rack or failure-domain label."
+
+[flags.node-version]
+env = "FIDUCIA_NODE_VERSION"
+aliases = ["node-version"]
+type = "string"
+help = "Advertised node software version."
+
+[flags.node-log-source]
+env = "FIDUCIA_NODE_LOG_SOURCE"
+aliases = ["node-log-source"]
+type = "string"
+help = "Local node log source path."
+
+[flags.log-sink]
+env = "FIDUCIA_LOG_SINK"
+aliases = ["log-sink"]
+type = "string"
+help = "Remote log sink URL."
+
+[flags.log-ship-interval-ms]
+env = "FIDUCIA_LOG_SHIP_INTERVAL_MS"
+aliases = ["log-ship-interval-ms"]
+type = "integer"
+help = "Log shipping interval in milliseconds."
+
+[flags.log]
+env = "RUST_LOG"
+aliases = ["log"]
+type = "string"
+help = "Rust tracing filter."

@@ -67,6 +67,15 @@ FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
 FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
 ```
 
+For audited non-secret flags, use the pinned launcher:
+
+```bash
+make -B -C vendor/flags-2-env all
+scripts/with-flags2env.sh --port=8091 --node-id=node-a --node-url=http://localhost:8090 --brain-url=http://localhost:8095 -- cargo run --locked
+```
+
+`FIDUCIA_INTERNAL_SECRET` remains environment-only.
+
 Env: `PORT`, `FIDUCIA_INTERNAL_SECRET` (required), `FIDUCIA_NODE_ID`,
 `FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
 `FIDUCIA_HEARTBEAT_MS`, `FIDUCIA_NODE_ADDRESS`, `FIDUCIA_REGION`, `FIDUCIA_AZ`,
