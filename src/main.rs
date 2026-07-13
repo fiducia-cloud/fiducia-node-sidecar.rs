@@ -49,12 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FIDUCIA_NODE_URL").unwrap_or_else(|_| "http://localhost:8090".to_string());
     let brain_url =
         std::env::var("FIDUCIA_BRAIN_URL").unwrap_or_else(|_| "http://localhost:8095".to_string());
-    let interval = Duration::from_millis(
-        std::env::var("FIDUCIA_HEARTBEAT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2000),
-    );
+    let interval = positive_ms_env("FIDUCIA_HEARTBEAT_MS", 2000);
     let node_meta = NodeMeta::from_env();
 
     tracing::info!(
@@ -109,6 +104,23 @@ fn required_env(name: &str) -> Result<String, std::io::Error> {
         .ok_or_else(|| std::io::Error::other(format!("{name} must be configured")))
 }
 
+/// Parse a positive millisecond interval from the environment. Missing,
+/// unparsable, and zero values all fall back to `default_ms`: a zero period
+/// makes `tokio::time::interval` panic, which would silently kill the spawned
+/// heartbeat task while `/healthz` keeps answering ok (the brain would then see
+/// a dead node), and a zero log-ship interval would busy-loop.
+pub(crate) fn positive_ms_env(name: &str, default_ms: u64) -> Duration {
+    positive_ms(std::env::var(name).ok(), default_ms)
+}
+
+fn positive_ms(raw: Option<String>, default_ms: u64) -> Duration {
+    Duration::from_millis(
+        raw.and_then(|s| s.parse().ok())
+            .filter(|&ms| ms > 0)
+            .unwrap_or(default_ms),
+    )
+}
+
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": SERVICE }))
 }
@@ -130,6 +142,30 @@ async fn metrics(node_url: String) -> String {
          fiducia_sidecar_up 1\n\
          {node_metrics}"
     )
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+
+    #[test]
+    fn zero_unparsable_negative_and_missing_intervals_fall_back_to_default() {
+        for raw in [Some("0"), Some("abc"), Some("-5"), Some(""), None] {
+            assert_eq!(
+                positive_ms(raw.map(str::to_string), 2000),
+                Duration::from_millis(2000),
+                "raw={raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn positive_intervals_are_honored() {
+        assert_eq!(
+            positive_ms(Some("250".into()), 2000),
+            Duration::from_millis(250)
+        );
+    }
 }
 
 #[cfg(test)]
