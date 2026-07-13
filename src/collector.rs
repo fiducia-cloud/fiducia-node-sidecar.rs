@@ -39,12 +39,7 @@ pub async fn ship_logs(node_log_source: String, sink: String) {
         return;
     }
 
-    let interval = Duration::from_millis(
-        std::env::var("FIDUCIA_LOG_SHIP_INTERVAL_MS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(5_000),
-    );
+    let interval = crate::positive_ms_env("FIDUCIA_LOG_SHIP_INTERVAL_MS", 5_000);
     let mut offset = 0u64;
 
     loop {
