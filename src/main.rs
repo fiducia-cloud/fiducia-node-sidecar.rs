@@ -321,7 +321,11 @@ mod metrics_endpoint_tests {
         let response = reqwest::get(format!("http://{sidecar_addr}/metrics"))
             .await
             .expect("scrape the sidecar");
-        assert_eq!(response.status(), 200, "a failed upstream fetch must still 200");
+        assert_eq!(
+            response.status(),
+            200,
+            "a failed upstream fetch must still 200"
+        );
         let body = response.text().await.expect("read body");
 
         // Sidecar-local gauge first, then the translated node scrape.
@@ -340,7 +344,11 @@ mod metrics_endpoint_tests {
 
         // Every upstream fetch presented the trusted-hop secret and no org header.
         let captured = seen.0.lock().unwrap();
-        assert_eq!(captured.len(), 3, "shards + metrics + readyz each fetched once");
+        assert_eq!(
+            captured.len(),
+            3,
+            "shards + metrics + readyz each fetched once"
+        );
         for headers in captured.iter() {
             assert_eq!(
                 headers

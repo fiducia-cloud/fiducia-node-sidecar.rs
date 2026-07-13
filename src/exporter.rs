@@ -256,7 +256,11 @@ fn render_fail(consts: &[(&'static str, String)], target: Target, fail: &FetchFa
     render_family(&mut out, consts, &scrape_up_family(target, false));
     let detail = fail.detail();
     if detail.is_empty() {
-        out.push_str(&format!("# {} scrape failed ({})\n", target.label(), fail.class()));
+        out.push_str(&format!(
+            "# {} scrape failed ({})\n",
+            target.label(),
+            fail.class()
+        ));
     } else {
         out.push_str(&format!(
             "# {} scrape failed ({}): {}\n",
@@ -343,7 +347,12 @@ fn node_families(shards: &Value, metrics: &Value, readyz: &Value) -> Vec<Family>
         "fiducia_node_all_shards_running",
         "1 if every hosted shard is running and responsive.",
         "gauge",
-        bool_value(readyz.get("all_shards_running").and_then(Value::as_bool).unwrap_or(false)),
+        bool_value(
+            readyz
+                .get("all_shards_running")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
     ));
     families.push(Family::scalar(
         "fiducia_node_shards",
@@ -394,11 +403,19 @@ fn node_families(shards: &Value, metrics: &Value, readyz: &Value) -> Vec<Family>
         "fiducia_quorum_status_complete",
         "1 if every hosted shard reported a complete, responsive status.",
         "gauge",
-        bool_value(quorum.get("status_complete").and_then(Value::as_bool).unwrap_or(false)),
+        bool_value(
+            quorum
+                .get("status_complete")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
     ));
 
     // Per-shard (and per-shard-peer) families.
-    let mut rows: Vec<&Value> = shards["shards"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let mut rows: Vec<&Value> = shards["shards"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
     rows.sort_by_key(|s| s["shard_id"].as_u64().unwrap_or(0));
     families.extend(per_shard_families(&rows));
 
@@ -442,7 +459,9 @@ fn per_shard_families(rows: &[&Value]) -> Vec<Family> {
         storage_healthy.push(per(bool_value(
             row["storage_healthy"].as_bool().unwrap_or(false),
         )));
-        has_quorum.push(per(bool_value(row["has_quorum"].as_bool().unwrap_or(false))));
+        has_quorum.push(per(bool_value(
+            row["has_quorum"].as_bool().unwrap_or(false),
+        )));
         healthy_replicas.push(per(u64_value(row["healthy_replicas"].as_u64())));
         is_leader.push(per(bool_value(row["role"].as_str() == Some("leader"))));
         follower_lag.push(per(u64_value(m["follower_lag_max"].as_u64())));
@@ -459,13 +478,21 @@ fn per_shard_families(rows: &[&Value]) -> Vec<Family> {
         // Per-peer replication (leader only; the node omits the array otherwise).
         if let Some(peers) = row["replication"].as_array() {
             let mut peers: Vec<&Value> = peers.iter().collect();
-            peers.sort_by(|a, b| a["peer"].as_str().unwrap_or("").cmp(b["peer"].as_str().unwrap_or("")));
+            peers.sort_by(|a, b| {
+                a["peer"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["peer"].as_str().unwrap_or(""))
+            });
             for peer in peers {
                 let labels = vec![
                     shard.clone(),
                     ("peer", peer["peer"].as_str().unwrap_or("").to_string()),
                 ];
-                replication_lag.push(Sample::labeled(labels.clone(), u64_value(peer["lag"].as_u64())));
+                replication_lag.push(Sample::labeled(
+                    labels.clone(),
+                    u64_value(peer["lag"].as_u64()),
+                ));
                 replication_in_flight.push(Sample::labeled(
                     labels.clone(),
                     bool_value(peer["in_flight"].as_bool().unwrap_or(false)),
@@ -479,23 +506,108 @@ fn per_shard_families(rows: &[&Value]) -> Vec<Family> {
     }
 
     vec![
-        Family { base: "fiducia_raft_term", help: "Current Raft term of a hosted shard.", kind: "gauge", samples: term },
-        Family { base: "fiducia_raft_commit_index", help: "Highest committed log index of a hosted shard.", kind: "gauge", samples: commit_index },
-        Family { base: "fiducia_raft_last_applied", help: "Highest log index applied to the state machine.", kind: "gauge", samples: last_applied },
-        Family { base: "fiducia_raft_last_log_index", help: "Highest log index present in a hosted shard's log.", kind: "gauge", samples: last_log_index },
-        Family { base: "fiducia_raft_snapshot_index", help: "Highest index included in the durable snapshot.", kind: "gauge", samples: snapshot_index },
-        Family { base: "fiducia_raft_retained_log_entries", help: "Log entries retained after compaction.", kind: "gauge", samples: retained },
-        Family { base: "fiducia_raft_storage_healthy", help: "1 if the shard's durable store is healthy.", kind: "gauge", samples: storage_healthy },
-        Family { base: "fiducia_raft_has_quorum", help: "1 if a majority of the shard group is caught up (leader-judged).", kind: "gauge", samples: has_quorum },
-        Family { base: "fiducia_raft_healthy_replicas", help: "Replicas (incl. self) caught up to commit_index (leader-only).", kind: "gauge", samples: healthy_replicas },
-        Family { base: "fiducia_raft_is_leader", help: "1 if this node currently leads the shard.", kind: "gauge", samples: is_leader },
-        Family { base: "fiducia_raft_append_rtt_ms", help: "Last AppendEntries round-trip in ms (leader-observed).", kind: "gauge", samples: append_rtt },
-        Family { base: "fiducia_raft_quorum_rtt_ms", help: "Last append-to-quorum-commit latency in ms (leader-observed).", kind: "gauge", samples: quorum_rtt },
-        Family { base: "fiducia_raft_follower_lag_max", help: "Max leader-to-follower match-index lag across peers.", kind: "gauge", samples: follower_lag },
-        Family { base: "fiducia_raft_leader_transfers_total", help: "Observed leadership changes into or out of leader on this shard.", kind: "counter", samples: leader_transfers },
-        Family { base: "fiducia_raft_replication_lag", help: "Per-peer replication lag behind the leader's log tail.", kind: "gauge", samples: replication_lag },
-        Family { base: "fiducia_raft_replication_in_flight", help: "1 if an AppendEntries to the peer is currently outstanding.", kind: "gauge", samples: replication_in_flight },
-        Family { base: "fiducia_raft_replication_match_index", help: "Highest log index the leader knows the peer has stored.", kind: "gauge", samples: replication_match },
+        Family {
+            base: "fiducia_raft_term",
+            help: "Current Raft term of a hosted shard.",
+            kind: "gauge",
+            samples: term,
+        },
+        Family {
+            base: "fiducia_raft_commit_index",
+            help: "Highest committed log index of a hosted shard.",
+            kind: "gauge",
+            samples: commit_index,
+        },
+        Family {
+            base: "fiducia_raft_last_applied",
+            help: "Highest log index applied to the state machine.",
+            kind: "gauge",
+            samples: last_applied,
+        },
+        Family {
+            base: "fiducia_raft_last_log_index",
+            help: "Highest log index present in a hosted shard's log.",
+            kind: "gauge",
+            samples: last_log_index,
+        },
+        Family {
+            base: "fiducia_raft_snapshot_index",
+            help: "Highest index included in the durable snapshot.",
+            kind: "gauge",
+            samples: snapshot_index,
+        },
+        Family {
+            base: "fiducia_raft_retained_log_entries",
+            help: "Log entries retained after compaction.",
+            kind: "gauge",
+            samples: retained,
+        },
+        Family {
+            base: "fiducia_raft_storage_healthy",
+            help: "1 if the shard's durable store is healthy.",
+            kind: "gauge",
+            samples: storage_healthy,
+        },
+        Family {
+            base: "fiducia_raft_has_quorum",
+            help: "1 if a majority of the shard group is caught up (leader-judged).",
+            kind: "gauge",
+            samples: has_quorum,
+        },
+        Family {
+            base: "fiducia_raft_healthy_replicas",
+            help: "Replicas (incl. self) caught up to commit_index (leader-only).",
+            kind: "gauge",
+            samples: healthy_replicas,
+        },
+        Family {
+            base: "fiducia_raft_is_leader",
+            help: "1 if this node currently leads the shard.",
+            kind: "gauge",
+            samples: is_leader,
+        },
+        Family {
+            base: "fiducia_raft_append_rtt_ms",
+            help: "Last AppendEntries round-trip in ms (leader-observed).",
+            kind: "gauge",
+            samples: append_rtt,
+        },
+        Family {
+            base: "fiducia_raft_quorum_rtt_ms",
+            help: "Last append-to-quorum-commit latency in ms (leader-observed).",
+            kind: "gauge",
+            samples: quorum_rtt,
+        },
+        Family {
+            base: "fiducia_raft_follower_lag_max",
+            help: "Max leader-to-follower match-index lag across peers.",
+            kind: "gauge",
+            samples: follower_lag,
+        },
+        Family {
+            base: "fiducia_raft_leader_transfers_total",
+            help: "Observed leadership changes into or out of leader on this shard.",
+            kind: "counter",
+            samples: leader_transfers,
+        },
+        Family {
+            base: "fiducia_raft_replication_lag",
+            help: "Per-peer replication lag behind the leader's log tail.",
+            kind: "gauge",
+            samples: replication_lag,
+        },
+        Family {
+            base: "fiducia_raft_replication_in_flight",
+            help: "1 if an AppendEntries to the peer is currently outstanding.",
+            kind: "gauge",
+            samples: replication_in_flight,
+        },
+        Family {
+            base: "fiducia_raft_replication_match_index",
+            help: "Highest log index the leader knows the peer has stored.",
+            kind: "gauge",
+            samples: replication_match,
+        },
     ]
 }
 
@@ -505,8 +617,16 @@ fn op_families(metrics: &Value) -> Vec<Family> {
     let mut errors = Vec::new();
     let mut histogram = Vec::new();
 
-    let mut ops: Vec<&Value> = metrics["operations"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    ops.sort_by(|a, b| a["op"].as_str().unwrap_or("").cmp(b["op"].as_str().unwrap_or("")));
+    let mut ops: Vec<&Value> = metrics["operations"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    ops.sort_by(|a, b| {
+        a["op"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["op"].as_str().unwrap_or(""))
+    });
 
     for op in ops {
         let name = op["op"].as_str().unwrap_or("").to_string();
@@ -910,7 +1030,8 @@ mod tests {
         // HELP/TYPE appear exactly once per family.
         assert_eq!(out.matches("# TYPE fiducia_raft_term gauge\n").count(), 1);
         assert_eq!(
-            out.matches("# TYPE fiducia_raft_leader_transfers_total counter\n").count(),
+            out.matches("# TYPE fiducia_raft_leader_transfers_total counter\n")
+                .count(),
             1
         );
     }
@@ -990,16 +1111,28 @@ mod tests {
         assert!(out.contains("fiducia_op_errors_total{node_id=\"node-a\",op=\"lock.acquire\"} 0\n"));
 
         // Histogram buckets with integer `le` and the +Inf overflow.
-        assert!(out.contains("fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"1\"} 1\n"));
-        assert!(out.contains("fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"5\"} 2\n"));
-        assert!(out.contains("fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"2000\"} 2\n"));
-        assert!(out.contains("fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"+Inf\"} 3\n"));
+        assert!(out.contains(
+            "fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"1\"} 1\n"
+        ));
+        assert!(out.contains(
+            "fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"5\"} 2\n"
+        ));
+        assert!(out.contains(
+            "fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"2000\"} 2\n"
+        ));
+        assert!(out.contains(
+            "fiducia_op_latency_ms_bucket{node_id=\"node-a\",op=\"kv.put\",le=\"+Inf\"} 3\n"
+        ));
         // _sum = avg_ms * count = 2.0 * 3 = 6; _count = 3.
         assert!(out.contains("fiducia_op_latency_ms_sum{node_id=\"node-a\",op=\"kv.put\"} 6\n"));
         assert!(out.contains("fiducia_op_latency_ms_count{node_id=\"node-a\",op=\"kv.put\"} 3\n"));
 
         // One HELP/TYPE for the whole histogram family across both ops.
-        assert_eq!(out.matches("# TYPE fiducia_op_latency_ms histogram\n").count(), 1);
+        assert_eq!(
+            out.matches("# TYPE fiducia_op_latency_ms histogram\n")
+                .count(),
+            1
+        );
         // Ops are emitted in sorted order.
         let put = out.find("op=\"kv.put\"").unwrap();
         let lock = out.find("op=\"lock.acquire\"").unwrap();
@@ -1049,17 +1182,25 @@ mod tests {
         assert!(out.contains("fiducia_brain_available{node_id=\"node-a\"} 1\n"));
         assert!(out.contains("fiducia_brain_ha_configured{node_id=\"node-a\"} 1\n"));
         assert!(out.contains("fiducia_placement_generation{node_id=\"node-a\"} 42\n"));
-        assert!(out.contains("fiducia_brain_nodes_by_health{node_id=\"node-a\",health=\"healthy\"} 3\n"));
-        assert!(out.contains("fiducia_brain_nodes_by_health{node_id=\"node-a\",health=\"suspect\"} 1\n"));
+        assert!(out
+            .contains("fiducia_brain_nodes_by_health{node_id=\"node-a\",health=\"healthy\"} 3\n"));
+        assert!(out
+            .contains("fiducia_brain_nodes_by_health{node_id=\"node-a\",health=\"suspect\"} 1\n"));
         assert!(out.contains("fiducia_placement_unplaced_shards{node_id=\"node-a\"} 0\n"));
         assert!(out.contains("fiducia_placement_under_replicated_shards{node_id=\"node-a\"} 2\n"));
         assert!(out.contains("fiducia_placement_leaderless_shards{node_id=\"node-a\"} 1\n"));
-        assert!(out.contains("fiducia_placement_shards_with_unhealthy_replicas{node_id=\"node-a\"} 1\n"));
+        assert!(out
+            .contains("fiducia_placement_shards_with_unhealthy_replicas{node_id=\"node-a\"} 1\n"));
     }
 
     // -- Error paths: never panic, endpoint content shows scrape down. --------
 
-    fn exporter_at(target: Target, node_url: String, brain_url: String, timeout_ms: u64) -> Exporter {
+    fn exporter_at(
+        target: Target,
+        node_url: String,
+        brain_url: String,
+        timeout_ms: u64,
+    ) -> Exporter {
         Exporter {
             target,
             node_url,
