@@ -7,11 +7,13 @@
 //!   * **control-plane bridge** — scrape the local node's `/v1/status` and
 //!     heartbeat it (plus node metadata / failure domain) to `fiducia-brain`
 //!     (see `heartbeat.rs` / `meta.rs`);
-//!   * **observability** — ship the node's logs and re-expose its metrics to the
-//!     telemetry stack (see `collector.rs`).
+//!   * **observability** — ship the node's logs (see `collector.rs`) and expose a
+//!     Prometheus `/metrics` endpoint that translates the node's (or the brain's)
+//!     JSON introspection into metric families (see `exporter.rs`).
 //!
 //! The heartbeat loop talks to the local node and brain; the observability path
-//! ships configured log files and re-exposes the local node metrics endpoint.
+//! ships configured log files and renders `/metrics` from the node/brain observe
+//! APIs. Both outbound planes are authenticated by the shared `auth` module.
 
 mod auth;
 mod collector;
