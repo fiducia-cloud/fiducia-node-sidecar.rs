@@ -72,7 +72,7 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_NODE_ID` | string | `node-a` | no | Stable identifier of the local node. |
 | `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node to scrape (`/v1/status`, `/metrics`). |
 | `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to. |
-| `FIDUCIA_HEARTBEAT_MS` | integer | `2000` | no | Heartbeat interval, milliseconds. |
+| `FIDUCIA_HEARTBEAT_MS` | positive integer | `2000` | no | Heartbeat interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of panicking the background task. |
 | `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
 | `FIDUCIA_REGION` | string | *(unset)* | no | Region — the primary failure domain the brain spreads replicas across. |
 | `FIDUCIA_AZ` | string | *(unset)* | no | Availability zone (failure-domain metadata). |
@@ -80,7 +80,7 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_NODE_VERSION` | string | *(unset)* | no | Reported node version (metadata). |
 | `FIDUCIA_NODE_LOG_SOURCE` | string | *(unset)* | no | Path to the node log file to tail and ship. Empty disables log shipping. |
 | `FIDUCIA_LOG_SINK` | string | *(unset)* | no | Log sink: `stdout`, `stderr`, `tracing`, or an HTTP(S) endpoint. Empty disables log shipping. |
-| `FIDUCIA_LOG_SHIP_INTERVAL_MS` | integer | `5000` | no | Log-shipping poll interval, milliseconds. |
+| `FIDUCIA_LOG_SHIP_INTERVAL_MS` | positive integer | `5000` | no | Log-shipping poll interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of busy-looping. |
 
 ## Trust boundary
 
@@ -105,12 +105,28 @@ Provide a dev secret so the sidecar starts; everything else can default:
 ```bash
 FIDUCIA_INTERNAL_SECRET=dev-secret \
 FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
-FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
+FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run --locked   # :8091
 ```
 
 Use a throwaway value for `FIDUCIA_INTERNAL_SECRET` in dev; in production it must
 match the node's and brain's configured trusted-hop secret and be delivered as a
 real secret (never committed, never a shell-history literal).
+
+### Reproducible container and CI dependency
+
+The sidecar consumes generated contracts from the sibling
+`fiducia-interfaces` repository. CI and the Dockerfile pin it to commit
+`487e470c45ab5851e8f6f3b1dc048fe067fbf408`; neither follows a moving branch.
+The Docker build checks the commit out detached and verifies that its full
+`HEAD` equals `INTERFACES_SHA`, so branches, tags, and abbreviated hashes fail
+closed. Update the Dockerfile argument and CI checkout `ref` together when
+adopting a reviewed contracts commit.
+
+```bash
+docker build \
+  --build-arg INTERFACES_SHA=<40-character-commit-sha> \
+  -t fiducia-node-sidecar:local .
+```
 
 ## flags-2-env
 
@@ -123,7 +139,7 @@ audited in CI (`.github/workflows/cli-flags.yml`).
 git submodule update --init --recursive
 make -B -C vendor/flags-2-env all
 FIDUCIA_INTERNAL_SECRET="$FIDUCIA_INTERNAL_SECRET" \
-  scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 -- cargo run
+  scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 -- cargo run --locked
 ```
 
 `scripts/with-flags2env.sh` runs `flags2env` against `.cli-flags.toml`, exports
@@ -142,6 +158,10 @@ Hardening applied / verified:
   (`RequestBodyLimitLayer`, 64 KiB), a request timeout (`TimeoutLayer`, 15 s),
   and `CatchPanicLayer` so a panicking handler returns `500` instead of dropping
   the connection.
+- **Safe background intervals** — heartbeat and log-shipping periods must parse
+  as positive milliseconds; missing, zero, negative, and malformed values use
+  their documented defaults so heartbeat cannot panic and log shipping cannot
+  spin in a zero-delay loop.
 - **No unsafe / no reachable panics** — no `unsafe` blocks; network-facing paths
   use fallible parsing and `unwrap_or_*` fallbacks rather than `unwrap()/expect()`.
 - **No timing-unsafe secret comparison** — the secret is only presented outbound,
