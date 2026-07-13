@@ -12,5 +12,5 @@ Key files:
   to the brain.
 - `meta.rs` — static node metadata the sidecar reports on the node's behalf
   (notably its failure domain / region).
-- `collector.rs` — observability half (logs + metrics shipping to the telemetry
-  stack); currently a stub.
+- `collector.rs` — implemented log tailing/shipping plus node metrics scraping
+  and re-exposure with scrape-health telemetry.

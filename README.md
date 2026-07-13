@@ -8,8 +8,10 @@ binary stays a pure coordination engine.
 The **control-plane bridge is implemented**: on a timer it scrapes the local
 node's `/v1/status` and POSTs a heartbeat (address, failure domain = region, and
 the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`. The
-**observability half** (shipping logs, re-exposing `/metrics`) is still a stub —
-in practice a Vector/Fluent-Bit sidecar may own that instead.
+**observability half is implemented too**: it tails a configured log file to
+stdout/tracing or an HTTP sink and re-exposes node Prometheus metrics with an
+explicit scrape-health gauge. A Vector/Fluent-Bit sidecar may still own logs in
+larger deployments by leaving the log source/sink unset.
 
 ## Why split it out
 
@@ -63,7 +65,8 @@ FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
 FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
 ```
 
-Env: `PORT`, `FIDUCIA_NODE_ID`, `FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
+Env: `PORT`, `FIDUCIA_INTERNAL_SECRET` (required), `FIDUCIA_NODE_ID`,
+`FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
 `FIDUCIA_HEARTBEAT_MS`, `FIDUCIA_NODE_ADDRESS`, `FIDUCIA_REGION`, `FIDUCIA_AZ`,
 `FIDUCIA_RACK`, `FIDUCIA_NODE_VERSION`.
 
