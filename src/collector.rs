@@ -101,7 +101,3 @@ async fn ship_log_chunk(source: &str, sink: &str, chunk: String) {
         }
     }
 }
-
-fn sanitize_metric_comment(value: &str) -> String {
-    value.replace('\n', " ")
-}
