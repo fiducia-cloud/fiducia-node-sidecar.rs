@@ -62,6 +62,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         interval
     );
 
+    // Observability exporter: translate the local node's (or the brain's) JSON
+    // introspection into Prometheus metrics for `/metrics`. Built before the
+    // heartbeat spawn since that consumes `brain_url`.
+    let exporter = Arc::new(Exporter::from_env(
+        node_url.clone(),
+        brain_url.clone(),
+        &node_meta,
+    ));
+
     // Bridge: heartbeat the local node's status + metadata to the brain.
     tokio::spawn(heartbeat::run(
         node_url.clone(),
@@ -70,24 +79,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         interval,
     ));
 
-    // Observability: ship logs and re-expose scraped node metrics.
+    // Observability: ship logs off the box to the telemetry stack.
     tokio::spawn(collector::ship_logs(
         std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
         std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
     ));
-    let metrics_node_url = node_url.clone();
 
-    let app = Router::new()
-        .route("/healthz", get(health))
-        .route("/readyz", get(health))
-        .route("/meta", get(move || meta_handler(node_meta.clone())))
-        .route("/metrics", get(move || metrics(metrics_node_url.clone())))
-        // Hardening stack (outermost last): catch handler panics → 500, bound
-        // request time, and cap body size.
-        .layer(TraceLayer::new_for_http())
-        .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-        .layer(CatchPanicLayer::new());
+    let app = build_router(node_meta, exporter);
 
     let port: u16 = std::env::var("PORT")
         .ok()
