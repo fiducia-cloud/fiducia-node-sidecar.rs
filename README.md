@@ -61,7 +61,9 @@ shard's replicas so one rack/zone loss can't take a quorum.
 | `src/main.rs`     | wiring, spawns heartbeat + collectors, HTTP surface     |
 | `src/heartbeat.rs`| scrape node status → heartbeat to brain                 |
 | `src/meta.rs`     | node identity + failure-domain metadata                 |
-| `src/collector.rs`| log shipping + metric scraping                          |
+| `src/collector.rs`| node log shipping                                       |
+| `src/exporter.rs` | translate node/brain introspection → Prometheus metrics |
+| `src/auth.rs`     | shared trusted-hop `x-fiducia-internal-auth` header     |
 
 ## Configuration
 
