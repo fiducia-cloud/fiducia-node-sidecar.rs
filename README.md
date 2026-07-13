@@ -12,7 +12,8 @@ the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`.
 The observability path is implemented too: it tails a configured node log,
 forwards new chunks to tracing or an HTTP sink, scrapes the node's Prometheus
 endpoint, and re-exposes it with sidecar/node scrape-health gauges. A dedicated
-Vector or Fluent Bit sidecar can still replace log shipping in larger installs.
+Vector or Fluent Bit sidecar can replace log shipping in larger installs by
+leaving the log source and sink unset.
 
 ## Why split it out
 
@@ -66,7 +67,8 @@ FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
 FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
 ```
 
-Env: `PORT`, `FIDUCIA_NODE_ID`, `FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
+Env: `PORT`, `FIDUCIA_INTERNAL_SECRET` (required), `FIDUCIA_NODE_ID`,
+`FIDUCIA_NODE_URL`, `FIDUCIA_BRAIN_URL`,
 `FIDUCIA_HEARTBEAT_MS`, `FIDUCIA_NODE_ADDRESS`, `FIDUCIA_REGION`, `FIDUCIA_AZ`,
 `FIDUCIA_RACK`, `FIDUCIA_NODE_VERSION`, `FIDUCIA_NODE_LOG_SOURCE`,
 `FIDUCIA_LOG_SINK`, and `FIDUCIA_LOG_SHIP_INTERVAL_MS`.
