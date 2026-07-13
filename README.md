@@ -52,7 +52,7 @@ shard's replicas so one rack/zone loss can't take a quorum.
 |-------|---------|
 | `/healthz`, `/readyz` | sidecar liveness |
 | `/meta` | node metadata the sidecar reports upstream |
-| `/metrics` | re-exposed node metrics + sidecar-local metrics |
+| `/metrics` | sidecar-local metrics + the node/brain scrape translated to Prometheus |
 
 ## Layout
 
