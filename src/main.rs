@@ -13,11 +13,14 @@
 //! The heartbeat loop talks to the local node and brain; the observability path
 //! ships configured log files and re-exposes the local node metrics endpoint.
 
+mod auth;
 mod collector;
+mod exporter;
 mod heartbeat;
 mod meta;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{routing::get, Json, Router};
@@ -27,6 +30,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
+use exporter::Exporter;
 use meta::NodeMeta;
 
 const SERVICE: &str = "fiducia-node-sidecar";
