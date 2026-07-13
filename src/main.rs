@@ -99,6 +99,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Assemble the sidecar's HTTP surface. Shared by `main` and the tests so both
+/// exercise the exact same routes, handlers, and hardening layers.
+fn build_router(node_meta: NodeMeta, exporter: Arc<Exporter>) -> Router {
+    Router::new()
+        .route("/healthz", get(health))
+        .route("/readyz", get(health))
+        .route("/meta", get(move || meta_handler(node_meta.clone())))
+        .route("/metrics", get(move || metrics(exporter.clone())))
+        // Hardening stack (outermost last): catch handler panics → 500, bound
+        // request time, and cap body size.
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(CatchPanicLayer::new())
+}
+
 fn required_env(name: &str) -> Result<String, std::io::Error> {
     std::env::var(name)
         .ok()
