@@ -72,7 +72,7 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_NODE_ID` | string | `node-a` | no | Stable identifier of the local node. |
 | `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node to scrape (`/v1/status`, `/metrics`). |
 | `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to. |
-| `FIDUCIA_HEARTBEAT_MS` | integer | `2000` | no | Heartbeat interval, milliseconds. |
+| `FIDUCIA_HEARTBEAT_MS` | positive integer | `2000` | no | Heartbeat interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of panicking the background task. |
 | `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
 | `FIDUCIA_REGION` | string | *(unset)* | no | Region — the primary failure domain the brain spreads replicas across. |
 | `FIDUCIA_AZ` | string | *(unset)* | no | Availability zone (failure-domain metadata). |
@@ -80,7 +80,7 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_NODE_VERSION` | string | *(unset)* | no | Reported node version (metadata). |
 | `FIDUCIA_NODE_LOG_SOURCE` | string | *(unset)* | no | Path to the node log file to tail and ship. Empty disables log shipping. |
 | `FIDUCIA_LOG_SINK` | string | *(unset)* | no | Log sink: `stdout`, `stderr`, `tracing`, or an HTTP(S) endpoint. Empty disables log shipping. |
-| `FIDUCIA_LOG_SHIP_INTERVAL_MS` | integer | `5000` | no | Log-shipping poll interval, milliseconds. |
+| `FIDUCIA_LOG_SHIP_INTERVAL_MS` | positive integer | `5000` | no | Log-shipping poll interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of busy-looping. |
 
 ## Trust boundary
 
@@ -142,6 +142,10 @@ Hardening applied / verified:
   (`RequestBodyLimitLayer`, 64 KiB), a request timeout (`TimeoutLayer`, 15 s),
   and `CatchPanicLayer` so a panicking handler returns `500` instead of dropping
   the connection.
+- **Safe background intervals** — heartbeat and log-shipping periods must parse
+  as positive milliseconds; missing, zero, negative, and malformed values use
+  their documented defaults so heartbeat cannot panic and log shipping cannot
+  spin in a zero-delay loop.
 - **No unsafe / no reachable panics** — no `unsafe` blocks; network-facing paths
   use fallible parsing and `unwrap_or_*` fallbacks rather than `unwrap()/expect()`.
 - **No timing-unsafe secret comparison** — the secret is only presented outbound,
