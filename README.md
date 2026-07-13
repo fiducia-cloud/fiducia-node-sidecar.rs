@@ -92,9 +92,13 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 ## Trust boundary
 
 `FIDUCIA_INTERNAL_SECRET` authenticates the sidecar's **outbound** trusted-hop
-calls to the two guarded `/v1` planes — the local node (`GET /v1/status`) and the
-brain (`POST /v1/nodes/{id}/heartbeat`) — attached as the `x-fiducia-internal-auth`
-header. It is **secure by default**: `main.rs` requires it at startup and the
+calls to the guarded `/v1` planes — the local node (`GET /v1/status` for the
+heartbeat; `GET /v1/observe/shards`, `GET /v1/observe/metrics`, `GET /readyz` for
+the exporter) and the brain (`POST /v1/nodes/{id}/heartbeat`, and `GET /v1/status`
+in brain export mode) — attached as the `x-fiducia-internal-auth` header by the
+shared `auth` module. Those node observe/readyz paths are org-exempt, so the
+sidecar sends **no** `x-fiducia-org-id`. It is **secure by default**: `main.rs`
+requires the secret at startup and the
 process refuses to boot (exits with an error) if it is unset or blank, so the
 sidecar can never silently emit unauthenticated heartbeats. The secret is never
 logged and never compared in-process (the sidecar only *presents* it), so there
