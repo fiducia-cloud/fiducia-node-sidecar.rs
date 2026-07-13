@@ -1,13 +1,15 @@
-//! Observability collection: logs + metrics.
+//! Observability collection: log shipping.
 //!
-//! The other half of the sidecar's job: get the node's telemetry off the box and
+//! Half of the sidecar's observability job: get the node's logs off the box and
 //! into the observability stack — **not** the brain (the brain only wants
 //! placement metadata, never data-plane logs).
 //!
 //!   * **logs** — tail the node's log file and ship to the log backend (an HTTP
 //!     sink such as Loki / a Vector pipeline).
-//!   * **metrics** — scrape the node's `/metrics` and re-expose (or remote-write)
-//!     for Prometheus, annotated with this node's identity/failure-domain.
+//!
+//! Metrics are handled by [`crate::exporter`], which translates the node's
+//! structured observe API into Prometheus text for `/metrics` (the node has no
+//! `/metrics` route of its own to re-expose).
 //!
 //! (For heavy production use you may prefer a dedicated Vector/Fluent Bit
 //! sidecar; this keeps the single-binary deployment self-contained.)
@@ -17,8 +19,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-/// HTTP client for scraping the node and POSTing to the log sink. Short timeout —
-/// telemetry must never block the data plane.
+/// HTTP client for POSTing to the log sink. Short timeout — telemetry must never
+/// block the data plane.
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
