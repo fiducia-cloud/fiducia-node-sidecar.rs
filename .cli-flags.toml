@@ -35,6 +35,18 @@ aliases = ["brain-url"]
 type = "string"
 help = "Brain service base URL."
 
+[flags.export-target]
+env = "FIDUCIA_EXPORT_TARGET"
+aliases = ["export-target"]
+type = "string"
+help = "Which plane /metrics exports: node or brain."
+
+[flags.observe-timeout-ms]
+env = "FIDUCIA_OBSERVE_TIMEOUT_MS"
+aliases = ["observe-timeout-ms"]
+type = "integer"
+help = "Per-fetch timeout for the metrics exporter in milliseconds."
+
 [flags.heartbeat-ms]
 env = "FIDUCIA_HEARTBEAT_MS"
 aliases = ["heartbeat-ms"]

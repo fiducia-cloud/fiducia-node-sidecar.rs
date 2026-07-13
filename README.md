@@ -9,11 +9,14 @@ The **control-plane bridge is implemented**: on a timer it scrapes the local
 node's `/v1/status` and POSTs a heartbeat (address, failure domain = region, and
 the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`.
 
-The observability path is implemented too: it tails a configured node log,
-forwards new chunks to tracing or an HTTP sink, scrapes the node's Prometheus
-endpoint, and re-exposes it with sidecar/node scrape-health gauges. A dedicated
-Vector or Fluent Bit sidecar can replace log shipping in larger installs by
-leaving the log source and sink unset.
+The observability path is implemented too: it tails a configured node log and
+forwards new chunks to tracing or an HTTP sink, and it exposes a Prometheus
+`/metrics` endpoint that **translates** the node's structured observability API
+(`/v1/observe/shards`, `/v1/observe/metrics`, `/readyz`) — or, in `brain` mode,
+the brain's `/v1/status` rollup — into `fiducia_`-prefixed metric families. (The
+node has no `/metrics` route of its own to re-expose; the sidecar renders one from
+the JSON introspection instead.) A dedicated Vector or Fluent Bit sidecar can
+replace log shipping in larger installs by leaving the log source and sink unset.
 
 ## Why split it out
 
@@ -25,7 +28,7 @@ here, so the node has no dependency on the brain or the telemetry stack.
 |---------|-----------------------|---------|
 | **Control-plane bridge** | scrape local node `/v1/status`; heartbeat liveness + reported shards + node **metadata** (region/AZ/rack) | `fiducia-brain` |
 | **Logs** | tail the node's stdout/log file and ship | log backend (Loki / Vector pipeline) |
-| **Metrics** | scrape the node's `/metrics`, re-expose annotated with node identity | Prometheus |
+| **Metrics** | translate the node's observe API (or the brain's `/v1/status`) into Prometheus text, annotated with node identity | Prometheus |
 
 Note: data-plane **Raft logs are never shipped** anywhere — their durability is
 the replication itself. The sidecar moves *telemetry* and *placement metadata*,
@@ -49,7 +52,7 @@ shard's replicas so one rack/zone loss can't take a quorum.
 |-------|---------|
 | `/healthz`, `/readyz` | sidecar liveness |
 | `/meta` | node metadata the sidecar reports upstream |
-| `/metrics` | re-exposed node metrics + sidecar-local metrics |
+| `/metrics` | sidecar-local metrics + the node/brain scrape translated to Prometheus |
 
 ## Layout
 
@@ -58,7 +61,9 @@ shard's replicas so one rack/zone loss can't take a quorum.
 | `src/main.rs`     | wiring, spawns heartbeat + collectors, HTTP surface     |
 | `src/heartbeat.rs`| scrape node status → heartbeat to brain                 |
 | `src/meta.rs`     | node identity + failure-domain metadata                 |
-| `src/collector.rs`| log shipping + metric scraping                          |
+| `src/collector.rs`| node log shipping                                       |
+| `src/exporter.rs` | translate node/brain introspection → Prometheus metrics |
+| `src/auth.rs`     | shared trusted-hop `x-fiducia-internal-auth` header     |
 
 ## Configuration
 
@@ -70,8 +75,10 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_INTERNAL_SECRET` | string | *(none — required)* | **yes** | Trusted-hop auth secret sent as `x-fiducia-internal-auth` on every node/brain `/v1` call. Startup fails closed if unset/empty. |
 | `PORT` | integer | `8091` | no | TCP port the sidecar HTTP surface listens on. |
 | `FIDUCIA_NODE_ID` | string | `node-a` | no | Stable identifier of the local node. |
-| `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node to scrape (`/v1/status`, `/metrics`). |
-| `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to. |
+| `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node the sidecar scrapes (`/v1/status` for heartbeat; `/v1/observe/shards`, `/v1/observe/metrics`, `/readyz` for the exporter). |
+| `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to (and to scrape `/v1/status` from in `brain` export mode). |
+| `FIDUCIA_EXPORT_TARGET` | `node` \| `brain` | `node` | no | Which plane `/metrics` exports. `node` translates the local node's observe API; `brain` translates the brain's `/v1/status` cluster rollup. Unrecognized values fall back to `node`. |
+| `FIDUCIA_OBSERVE_TIMEOUT_MS` | positive integer | `3000` | no | Per-fetch timeout the exporter applies to each upstream call. Zero, negative, or unparsable values fall back to the default. |
 | `FIDUCIA_HEARTBEAT_MS` | positive integer | `2000` | no | Heartbeat interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of panicking the background task. |
 | `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
 | `FIDUCIA_REGION` | string | *(unset)* | no | Region — the primary failure domain the brain spreads replicas across. |
@@ -85,9 +92,13 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 ## Trust boundary
 
 `FIDUCIA_INTERNAL_SECRET` authenticates the sidecar's **outbound** trusted-hop
-calls to the two guarded `/v1` planes — the local node (`GET /v1/status`) and the
-brain (`POST /v1/nodes/{id}/heartbeat`) — attached as the `x-fiducia-internal-auth`
-header. It is **secure by default**: `main.rs` requires it at startup and the
+calls to the guarded `/v1` planes — the local node (`GET /v1/status` for the
+heartbeat; `GET /v1/observe/shards`, `GET /v1/observe/metrics`, `GET /readyz` for
+the exporter) and the brain (`POST /v1/nodes/{id}/heartbeat`, and `GET /v1/status`
+in brain export mode) — attached as the `x-fiducia-internal-auth` header by the
+shared `auth` module. Those node observe/readyz paths are org-exempt, so the
+sidecar sends **no** `x-fiducia-org-id`. It is **secure by default**: `main.rs`
+requires the secret at startup and the
 process refuses to boot (exits with an error) if it is unset or blank, so the
 sidecar can never silently emit unauthenticated heartbeats. The secret is never
 logged and never compared in-process (the sidecar only *presents* it), so there

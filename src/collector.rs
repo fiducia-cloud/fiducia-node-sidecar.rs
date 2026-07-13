@@ -1,13 +1,15 @@
-//! Observability collection: logs + metrics.
+//! Observability collection: log shipping.
 //!
-//! The other half of the sidecar's job: get the node's telemetry off the box and
+//! Half of the sidecar's observability job: get the node's logs off the box and
 //! into the observability stack — **not** the brain (the brain only wants
 //! placement metadata, never data-plane logs).
 //!
 //!   * **logs** — tail the node's log file and ship to the log backend (an HTTP
 //!     sink such as Loki / a Vector pipeline).
-//!   * **metrics** — scrape the node's `/metrics` and re-expose (or remote-write)
-//!     for Prometheus, annotated with this node's identity/failure-domain.
+//!
+//! Metrics are handled by [`crate::exporter`], which translates the node's
+//! structured observe API into Prometheus text for `/metrics` (the node has no
+//! `/metrics` route of its own to re-expose).
 //!
 //! (For heavy production use you may prefer a dedicated Vector/Fluent Bit
 //! sidecar; this keeps the single-binary deployment self-contained.)
@@ -17,8 +19,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-/// HTTP client for scraping the node and POSTing to the log sink. Short timeout —
-/// telemetry must never block the data plane.
+/// HTTP client for POSTing to the log sink. Short timeout — telemetry must never
+/// block the data plane.
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -62,41 +64,6 @@ pub async fn ship_logs(node_log_source: String, sink: String) {
     }
 }
 
-/// Scrape the local node's Prometheus metrics, annotated with this node's
-/// identity so the metrics are attributable once merged.
-///
-/// Prefixes a `fiducia_sidecar_node_scrape_up` gauge (1 when the node was
-/// scraped, 0 otherwise, with the failure reason as a comment) so scrape failures
-/// are alertable, then the node's own exposition text on success.
-pub async fn scrape_node_metrics(node_url: &str) -> String {
-    let url = format!("{}/metrics", node_url.trim_end_matches('/'));
-    match client().get(url).send().await {
-        Ok(response) if response.status().is_success() => {
-            let body = response.text().await.unwrap_or_default();
-            format!(
-                "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-                 # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-                 fiducia_sidecar_node_scrape_up 1\n\
-                 {body}"
-            )
-        }
-        Ok(response) => format!(
-            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-             fiducia_sidecar_node_scrape_up 0\n\
-             # node metrics scrape returned HTTP {}\n",
-            response.status().as_u16()
-        ),
-        Err(err) => format!(
-            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-             fiducia_sidecar_node_scrape_up 0\n\
-             # node metrics scrape error: {}\n",
-            sanitize_metric_comment(&err.to_string())
-        ),
-    }
-}
-
 async fn read_new_log_bytes(
     path: &str,
     offset: u64,
@@ -133,8 +100,4 @@ async fn ship_log_chunk(source: &str, sink: &str, chunk: String) {
             );
         }
     }
-}
-
-fn sanitize_metric_comment(value: &str) -> String {
-    value.replace('\n', " ")
 }

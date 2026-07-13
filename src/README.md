@@ -12,5 +12,8 @@ Key files:
   to the brain.
 - `meta.rs` — static node metadata the sidecar reports on the node's behalf
   (notably its failure domain / region).
-- `collector.rs` — tails and forwards configured node logs, scrapes node
-  Prometheus metrics, and reports scrape health while re-exposing them.
+- `collector.rs` — tails and forwards configured node logs to the log backend.
+- `exporter.rs` — fetches the node's observe API (or the brain's `/v1/status`)
+  and translates it into Prometheus text exposition for `/metrics`.
+- `auth.rs` — the shared trusted-hop `x-fiducia-internal-auth` header used by both
+  the heartbeat bridge and the exporter on their outbound `/v1` calls.
