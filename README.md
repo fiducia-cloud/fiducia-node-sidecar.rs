@@ -28,7 +28,7 @@ here, so the node has no dependency on the brain or the telemetry stack.
 |---------|-----------------------|---------|
 | **Control-plane bridge** | scrape local node `/v1/status`; heartbeat liveness + reported shards + node **metadata** (region/AZ/rack) | `fiducia-brain` |
 | **Logs** | tail the node's stdout/log file and ship | log backend (Loki / Vector pipeline) |
-| **Metrics** | scrape the node's `/metrics`, re-expose annotated with node identity | Prometheus |
+| **Metrics** | translate the node's observe API (or the brain's `/v1/status`) into Prometheus text, annotated with node identity | Prometheus |
 
 Note: data-plane **Raft logs are never shipped** anywhere — their durability is
 the replication itself. The sidecar moves *telemetry* and *placement metadata*,
