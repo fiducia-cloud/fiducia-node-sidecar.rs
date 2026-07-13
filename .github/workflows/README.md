@@ -11,7 +11,7 @@ GitHub Actions pipelines for fiducia-node-sidecar:
   The Dockerfile fetches interfaces by full SHA, checks it out detached, and
   verifies the resulting `HEAD` before compiling with `--locked`; the workflow
   passes that same SHA explicitly.
-- `deploy-test.yml` — secret-gated deploy to the TEST environment; a no-op when
-  the `KUBE_CONFIG_TEST` secret is absent (validation only).
+- `deploy-test.yml` — fail-closed TEST rollout: it requires `KUBE_CONFIG_TEST`,
+  an existing deployment, and a successful rollout.
 - `cli-flags.yml` — audits `.cli-flags.toml` with the pinned `flags2env`
   submodule whenever the CLI flag schema, scripts, or submodule change.
