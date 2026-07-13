@@ -145,6 +145,30 @@ async fn metrics(node_url: String) -> String {
 }
 
 #[cfg(test)]
+mod interval_tests {
+    use super::*;
+
+    #[test]
+    fn zero_unparsable_negative_and_missing_intervals_fall_back_to_default() {
+        for raw in [Some("0"), Some("abc"), Some("-5"), Some(""), None] {
+            assert_eq!(
+                positive_ms(raw.map(str::to_string), 2000),
+                Duration::from_millis(2000),
+                "raw={raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn positive_intervals_are_honored() {
+        assert_eq!(
+            positive_ms(Some("250".into()), 2000),
+            Duration::from_millis(250)
+        );
+    }
+}
+
+#[cfg(test)]
 mod interface_contract_tests {
     use fiducia_interfaces::{LockAcquireManyRequest, ProposeErrorReason};
 
