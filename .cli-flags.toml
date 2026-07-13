@@ -1,0 +1,93 @@
+# flags-2-env flag schema for the fiducia-node-sidecar: maps command-line flags
+# to the FIDUCIA_*/PORT env vars the binary reads. Consumed by
+# scripts/with-flags2env.sh and audited in CI (cli-flags.yml).
+[help]
+url = "https://github.com/fiducia-cloud/fiducia-node-sidecar.rs"
+columns = ["options", "env", "type", "description"]
+
+[parse]
+allow_unknown = false
+
+[flags.az]
+env = "FIDUCIA_AZ"
+aliases = ["az"]
+type = "string"
+help = "Availability zone (failure-domain metadata)."
+
+[flags.brain-url]
+env = "FIDUCIA_BRAIN_URL"
+aliases = ["brain-url"]
+type = "string"
+help = "Base URL of the control-plane brain to heartbeat to."
+
+[flags.heartbeat-ms]
+env = "FIDUCIA_HEARTBEAT_MS"
+aliases = ["heartbeat-ms"]
+type = "integer"
+help = "Heartbeat interval in milliseconds."
+
+[flags.internal-secret]
+env = "FIDUCIA_INTERNAL_SECRET"
+aliases = ["internal-secret"]
+type = "string"
+help = "Trusted-hop auth secret for node/brain /v1 calls (secret)."
+
+[flags.log-ship-interval-ms]
+env = "FIDUCIA_LOG_SHIP_INTERVAL_MS"
+aliases = ["log-ship-interval-ms"]
+type = "integer"
+help = "Log-shipping poll interval in milliseconds."
+
+[flags.log-sink]
+env = "FIDUCIA_LOG_SINK"
+aliases = ["log-sink"]
+type = "string"
+help = "Log sink: stdout, stderr, tracing, or an HTTP(S) endpoint."
+
+[flags.node-address]
+env = "FIDUCIA_NODE_ADDRESS"
+aliases = ["node-address"]
+type = "string"
+help = "Address peers/clients reach the node at (advertised to the brain)."
+
+[flags.node-id]
+env = "FIDUCIA_NODE_ID"
+aliases = ["node-id"]
+type = "string"
+help = "Stable identifier of the local node."
+
+[flags.node-log-source]
+env = "FIDUCIA_NODE_LOG_SOURCE"
+aliases = ["node-log-source"]
+type = "string"
+help = "Path to the node log file to tail and ship."
+
+[flags.node-url]
+env = "FIDUCIA_NODE_URL"
+aliases = ["node-url"]
+type = "string"
+help = "Base URL of the local node to scrape (/v1/status, /metrics)."
+
+[flags.node-version]
+env = "FIDUCIA_NODE_VERSION"
+aliases = ["node-version"]
+type = "string"
+help = "Reported node version (metadata)."
+
+[flags.rack]
+env = "FIDUCIA_RACK"
+aliases = ["rack"]
+type = "string"
+help = "Rack (failure-domain metadata)."
+
+[flags.region]
+env = "FIDUCIA_REGION"
+aliases = ["region"]
+type = "string"
+help = "Region — the primary failure domain the brain spreads replicas across."
+
+[flags.port]
+env = "PORT"
+aliases = ["port"]
+type = "integer"
+help = "TCP port the sidecar HTTP surface listens on (default 8091)."
