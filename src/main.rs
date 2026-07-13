@@ -206,3 +206,153 @@ mod interface_contract_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod metrics_endpoint_tests {
+    use super::*;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Shared capture of the headers every mock-node route saw.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<HeaderMap>>>);
+
+    async fn mock_shards(State(seen): State<Captured>, headers: HeaderMap) -> Json<Value> {
+        seen.0.lock().unwrap().push(headers);
+        Json(json!({
+            "node_id": "node-a",
+            "shard_count": 1,
+            "leader_count": 1,
+            "follower_count": 0,
+            "quorum": {
+                "leaderless_shards": [],
+                "at_risk_led_shards": [],
+                "storage_faulted_shards": [],
+                "unresponsive_shards": [],
+                "status_complete": true
+            },
+            "shards": [{
+                "shard_id": 0, "role": "leader", "term": 4, "leader_id": "node-a",
+                "commit_index": 12, "last_applied": 12, "last_log_index": 12,
+                "snapshot_index": 0, "retained_log_entries": 12,
+                "storage_healthy": true, "healthy_replicas": 3, "has_quorum": true,
+                "replication": [
+                    { "peer": "node-b", "match_index": 12, "lag": 0, "in_flight": false }
+                ],
+                "metrics": {
+                    "append_rtt_ms_last": 2, "quorum_rtt_ms_last": 5,
+                    "follower_lag_max": 0, "leader_transfer_count": 0
+                }
+            }]
+        }))
+    }
+
+    async fn mock_metrics(State(seen): State<Captured>, headers: HeaderMap) -> Json<Value> {
+        seen.0.lock().unwrap().push(headers);
+        Json(json!({
+            "operations": [{
+                "op": "kv.put", "count": 2, "errors": 0, "avg_ms": 1.0, "max_ms": 2.0,
+                "buckets": [
+                    { "le_ms": 1.0, "count": 1 }, { "le_ms": 5.0, "count": 2 },
+                    { "le_ms": 25.0, "count": 2 }, { "le_ms": 100.0, "count": 2 },
+                    { "le_ms": 500.0, "count": 2 }, { "le_ms": 2000.0, "count": 2 },
+                    { "le_ms": null, "count": 2 }
+                ]
+            }]
+        }))
+    }
+
+    async fn mock_readyz(State(seen): State<Captured>, headers: HeaderMap) -> Json<Value> {
+        seen.0.lock().unwrap().push(headers);
+        Json(json!({
+            "status": "ok", "all_shards_running": true,
+            "unresponsive_shards": [], "storage_faulted_shards": []
+        }))
+    }
+
+    async fn spawn(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    fn node_meta() -> NodeMeta {
+        NodeMeta {
+            node_id: "node-a".to_string(),
+            address: "http://localhost:8090".to_string(),
+            region: Some("us-east-1".to_string()),
+            availability_zone: None,
+            rack: None,
+            version: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_presents_internal_auth_and_never_sends_org_header() {
+        let seen = Captured::default();
+        let node_app = Router::new()
+            .route("/v1/observe/shards", get(mock_shards))
+            .route("/v1/observe/metrics", get(mock_metrics))
+            .route("/readyz", get(mock_readyz))
+            .with_state(seen.clone());
+        let node_addr = spawn(node_app).await;
+
+        // The exporter carries an explicit secret so the auth-header assertion is
+        // deterministic regardless of process env / OnceLock ordering.
+        let exporter = Arc::new(exporter::Exporter {
+            target: exporter::Target::Node,
+            node_url: format!("http://{node_addr}"),
+            brain_url: String::new(),
+            timeout: Duration::from_secs(3),
+            secret: Some("test-secret".to_string()),
+            labels: exporter::ConstLabels {
+                node_id: "node-a".to_string(),
+                region: Some("us-east-1".to_string()),
+            },
+        });
+
+        let sidecar_addr = spawn(build_router(node_meta(), exporter)).await;
+
+        let response = reqwest::get(format!("http://{sidecar_addr}/metrics"))
+            .await
+            .expect("scrape the sidecar");
+        assert_eq!(response.status(), 200, "a failed upstream fetch must still 200");
+        let body = response.text().await.expect("read body");
+
+        // Sidecar-local gauge first, then the translated node scrape.
+        assert!(body.starts_with("# HELP fiducia_sidecar_up"));
+        assert!(body.contains("fiducia_sidecar_up 1\n"));
+        assert!(body.contains(
+            "fiducia_sidecar_scrape_up{node_id=\"node-a\",region=\"us-east-1\",target=\"node\"} 1\n"
+        ));
+        assert!(body.contains("fiducia_node_up{node_id=\"node-a\",region=\"us-east-1\"} 1\n"));
+        assert!(body.contains(
+            "fiducia_raft_is_leader{node_id=\"node-a\",region=\"us-east-1\",shard=\"0\"} 1\n"
+        ));
+        assert!(body.contains(
+            "fiducia_op_requests_total{node_id=\"node-a\",region=\"us-east-1\",op=\"kv.put\"} 2\n"
+        ));
+
+        // Every upstream fetch presented the trusted-hop secret and no org header.
+        let captured = seen.0.lock().unwrap();
+        assert_eq!(captured.len(), 3, "shards + metrics + readyz each fetched once");
+        for headers in captured.iter() {
+            assert_eq!(
+                headers
+                    .get("x-fiducia-internal-auth")
+                    .and_then(|v| v.to_str().ok()),
+                Some("test-secret"),
+                "exporter must present the internal-auth header"
+            );
+            assert!(
+                headers.get("x-fiducia-org-id").is_none(),
+                "exporter must not send an org header to org-exempt observe paths"
+            );
+        }
+    }
+}
