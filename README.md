@@ -75,8 +75,10 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_INTERNAL_SECRET` | string | *(none — required)* | **yes** | Trusted-hop auth secret sent as `x-fiducia-internal-auth` on every node/brain `/v1` call. Startup fails closed if unset/empty. |
 | `PORT` | integer | `8091` | no | TCP port the sidecar HTTP surface listens on. |
 | `FIDUCIA_NODE_ID` | string | `node-a` | no | Stable identifier of the local node. |
-| `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node to scrape (`/v1/status`, `/metrics`). |
-| `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to. |
+| `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node the sidecar scrapes (`/v1/status` for heartbeat; `/v1/observe/shards`, `/v1/observe/metrics`, `/readyz` for the exporter). |
+| `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to (and to scrape `/v1/status` from in `brain` export mode). |
+| `FIDUCIA_EXPORT_TARGET` | `node` \| `brain` | `node` | no | Which plane `/metrics` exports. `node` translates the local node's observe API; `brain` translates the brain's `/v1/status` cluster rollup. Unrecognized values fall back to `node`. |
+| `FIDUCIA_OBSERVE_TIMEOUT_MS` | positive integer | `3000` | no | Per-fetch timeout the exporter applies to each upstream call. Zero, negative, or unparsable values fall back to the default. |
 | `FIDUCIA_HEARTBEAT_MS` | positive integer | `2000` | no | Heartbeat interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of panicking the background task. |
 | `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
 | `FIDUCIA_REGION` | string | *(unset)* | no | Region — the primary failure domain the brain spreads replicas across. |
