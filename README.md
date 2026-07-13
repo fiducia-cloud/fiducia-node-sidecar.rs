@@ -105,12 +105,28 @@ Provide a dev secret so the sidecar starts; everything else can default:
 ```bash
 FIDUCIA_INTERNAL_SECRET=dev-secret \
 FIDUCIA_NODE_ID=node-a FIDUCIA_NODE_URL=http://localhost:8090 \
-FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run   # :8091
+FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run --locked   # :8091
 ```
 
 Use a throwaway value for `FIDUCIA_INTERNAL_SECRET` in dev; in production it must
 match the node's and brain's configured trusted-hop secret and be delivered as a
 real secret (never committed, never a shell-history literal).
+
+### Reproducible container and CI dependency
+
+The sidecar consumes generated contracts from the sibling
+`fiducia-interfaces` repository. CI and the Dockerfile pin it to commit
+`bbd8b52ce729ec34b0a9bff4dda6d0a448181797`; neither follows a moving branch.
+The Docker build checks the commit out detached and verifies that its full
+`HEAD` equals `INTERFACES_SHA`, so branches, tags, and abbreviated hashes fail
+closed. Update the Dockerfile argument and CI checkout `ref` together when
+adopting a reviewed contracts commit.
+
+```bash
+docker build \
+  --build-arg INTERFACES_SHA=<40-character-commit-sha> \
+  -t fiducia-node-sidecar:local .
+```
 
 ## flags-2-env
 
@@ -123,7 +139,7 @@ audited in CI (`.github/workflows/cli-flags.yml`).
 git submodule update --init --recursive
 make -B -C vendor/flags-2-env all
 FIDUCIA_INTERNAL_SECRET="$FIDUCIA_INTERNAL_SECRET" \
-  scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 -- cargo run
+  scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 -- cargo run --locked
 ```
 
 `scripts/with-flags2env.sh` runs `flags2env` against `.cli-flags.toml`, exports
