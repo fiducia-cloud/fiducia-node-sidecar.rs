@@ -64,41 +64,6 @@ pub async fn ship_logs(node_log_source: String, sink: String) {
     }
 }
 
-/// Scrape the local node's Prometheus metrics, annotated with this node's
-/// identity so the metrics are attributable once merged.
-///
-/// Prefixes a `fiducia_sidecar_node_scrape_up` gauge (1 when the node was
-/// scraped, 0 otherwise, with the failure reason as a comment) so scrape failures
-/// are alertable, then the node's own exposition text on success.
-pub async fn scrape_node_metrics(node_url: &str) -> String {
-    let url = format!("{}/metrics", node_url.trim_end_matches('/'));
-    match client().get(url).send().await {
-        Ok(response) if response.status().is_success() => {
-            let body = response.text().await.unwrap_or_default();
-            format!(
-                "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-                 # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-                 fiducia_sidecar_node_scrape_up 1\n\
-                 {body}"
-            )
-        }
-        Ok(response) => format!(
-            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-             fiducia_sidecar_node_scrape_up 0\n\
-             # node metrics scrape returned HTTP {}\n",
-            response.status().as_u16()
-        ),
-        Err(err) => format!(
-            "# HELP fiducia_sidecar_node_scrape_up Whether the sidecar scraped the local node metrics endpoint.\n\
-             # TYPE fiducia_sidecar_node_scrape_up gauge\n\
-             fiducia_sidecar_node_scrape_up 0\n\
-             # node metrics scrape error: {}\n",
-            sanitize_metric_comment(&err.to_string())
-        ),
-    }
-}
-
 async fn read_new_log_bytes(
     path: &str,
     offset: u64,
