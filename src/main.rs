@@ -49,12 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FIDUCIA_NODE_URL").unwrap_or_else(|_| "http://localhost:8090".to_string());
     let brain_url =
         std::env::var("FIDUCIA_BRAIN_URL").unwrap_or_else(|_| "http://localhost:8095".to_string());
-    let interval = Duration::from_millis(
-        std::env::var("FIDUCIA_HEARTBEAT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2000),
-    );
+    let interval = positive_ms_env("FIDUCIA_HEARTBEAT_MS", 2000);
     let node_meta = NodeMeta::from_env();
 
     tracing::info!(

@@ -114,20 +114,22 @@ real secret (never committed, never a shell-history literal).
 
 ## flags-2-env
 
-CLI flags can be mapped to the `FIDUCIA_*`/`PORT` env vars above through the
+Non-secret settings can be mapped to the `FIDUCIA_*`/`PORT` env vars above through the
 pinned [`ORESoftware/flags-2-env`](https://github.com/ORESoftware/flags-2-env)
 parser (vendored as a submodule). The schema lives in `.cli-flags.toml` and is
 audited in CI (`.github/workflows/cli-flags.yml`).
 
 ```bash
 git submodule update --init --recursive
-make -C vendor/flags-2-env all   # if the prebuilt binary isn't present
-scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 \
-  --internal-secret=dev-secret -- cargo run
+make -B -C vendor/flags-2-env all
+FIDUCIA_INTERNAL_SECRET="$FIDUCIA_INTERNAL_SECRET" \
+  scripts/with-flags2env.sh --node-id=node-a --brain-url=http://localhost:8095 -- cargo run
 ```
 
 `scripts/with-flags2env.sh` runs `flags2env` against `.cli-flags.toml`, exports
 the resulting env map, then execs the given command.
+`FIDUCIA_INTERNAL_SECRET` is deliberately excluded from the CLI schema; inject it
+through the environment or a secret store.
 
 ## Security
 

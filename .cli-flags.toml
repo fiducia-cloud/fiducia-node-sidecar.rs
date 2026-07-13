@@ -1,6 +1,5 @@
-# flags-2-env flag schema for the fiducia-node-sidecar: maps command-line flags
-# to the FIDUCIA_*/PORT env vars the binary reads. Consumed by
-# scripts/with-flags2env.sh and audited in CI (cli-flags.yml).
+# Non-secret command-line configuration for fiducia-node-sidecar. The shared
+# internal authentication secret remains environment-only.
 [help]
 url = "https://github.com/fiducia-cloud/fiducia-node-sidecar.rs"
 columns = ["options", "env", "type", "description"]
@@ -8,17 +7,33 @@ columns = ["options", "env", "type", "description"]
 [parse]
 allow_unknown = false
 
-[flags.az]
-env = "FIDUCIA_AZ"
-aliases = ["az"]
+[env]
+ignore = ["FIDUCIA_INTERNAL_SECRET"]
+
+[flags.port]
+env = "PORT"
+aliases = ["port"]
+short = "p"
+type = "integer"
+help = "HTTP listen port."
+
+[flags.node-id]
+env = "FIDUCIA_NODE_ID"
+aliases = ["node-id"]
 type = "string"
-help = "Availability zone (failure-domain metadata)."
+help = "Stable data-plane node identifier."
+
+[flags.node-url]
+env = "FIDUCIA_NODE_URL"
+aliases = ["node-url"]
+type = "string"
+help = "Local data-plane node base URL."
 
 [flags.brain-url]
 env = "FIDUCIA_BRAIN_URL"
 aliases = ["brain-url"]
 type = "string"
-help = "Base URL of the control-plane brain to heartbeat to."
+help = "Brain service base URL."
 
 [flags.heartbeat-ms]
 env = "FIDUCIA_HEARTBEAT_MS"
@@ -26,68 +41,56 @@ aliases = ["heartbeat-ms"]
 type = "integer"
 help = "Heartbeat interval in milliseconds."
 
-[flags.internal-secret]
-env = "FIDUCIA_INTERNAL_SECRET"
-aliases = ["internal-secret"]
-type = "string"
-help = "Trusted-hop auth secret for node/brain /v1 calls (secret)."
-
-[flags.log-ship-interval-ms]
-env = "FIDUCIA_LOG_SHIP_INTERVAL_MS"
-aliases = ["log-ship-interval-ms"]
-type = "integer"
-help = "Log-shipping poll interval in milliseconds."
-
-[flags.log-sink]
-env = "FIDUCIA_LOG_SINK"
-aliases = ["log-sink"]
-type = "string"
-help = "Log sink: stdout, stderr, tracing, or an HTTP(S) endpoint."
-
 [flags.node-address]
 env = "FIDUCIA_NODE_ADDRESS"
 aliases = ["node-address"]
 type = "string"
-help = "Address peers/clients reach the node at (advertised to the brain)."
-
-[flags.node-id]
-env = "FIDUCIA_NODE_ID"
-aliases = ["node-id"]
-type = "string"
-help = "Stable identifier of the local node."
-
-[flags.node-log-source]
-env = "FIDUCIA_NODE_LOG_SOURCE"
-aliases = ["node-log-source"]
-type = "string"
-help = "Path to the node log file to tail and ship."
-
-[flags.node-url]
-env = "FIDUCIA_NODE_URL"
-aliases = ["node-url"]
-type = "string"
-help = "Base URL of the local node to scrape (/v1/status, /metrics)."
-
-[flags.node-version]
-env = "FIDUCIA_NODE_VERSION"
-aliases = ["node-version"]
-type = "string"
-help = "Reported node version (metadata)."
-
-[flags.rack]
-env = "FIDUCIA_RACK"
-aliases = ["rack"]
-type = "string"
-help = "Rack (failure-domain metadata)."
+help = "Advertised node address."
 
 [flags.region]
 env = "FIDUCIA_REGION"
 aliases = ["region"]
 type = "string"
-help = "Region — the primary failure domain the brain spreads replicas across."
+help = "Cloud region."
 
-[flags.port]
-env = "PORT"
-aliases = ["port"]
+[flags.az]
+env = "FIDUCIA_AZ"
+aliases = ["az"]
+type = "string"
+help = "Availability zone."
+
+[flags.rack]
+env = "FIDUCIA_RACK"
+aliases = ["rack"]
+type = "string"
+help = "Rack or failure-domain label."
+
+[flags.node-version]
+env = "FIDUCIA_NODE_VERSION"
+aliases = ["node-version"]
+type = "string"
+help = "Advertised node software version."
+
+[flags.node-log-source]
+env = "FIDUCIA_NODE_LOG_SOURCE"
+aliases = ["node-log-source"]
+type = "string"
+help = "Local node log source path."
+
+[flags.log-sink]
+env = "FIDUCIA_LOG_SINK"
+aliases = ["log-sink"]
+type = "string"
+help = "Remote log sink URL."
+
+[flags.log-ship-interval-ms]
+env = "FIDUCIA_LOG_SHIP_INTERVAL_MS"
+aliases = ["log-ship-interval-ms"]
 type = "integer"
-help = "TCP port the sidecar HTTP surface listens on (default 8091)."
+help = "Log shipping interval in milliseconds."
+
+[flags.log]
+env = "RUST_LOG"
+aliases = ["log"]
+type = "string"
+help = "Rust tracing filter."
