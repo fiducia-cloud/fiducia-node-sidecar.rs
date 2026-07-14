@@ -131,6 +131,46 @@ fn required_env(name: &str) -> Result<String, std::io::Error> {
         .ok_or_else(|| std::io::Error::other(format!("{name} must be configured")))
 }
 
+/// What the sidecar runs alongside the `/metrics` exporter.
+///
+/// A node sidecar (`Full`) also heartbeats the local node to the brain and ships
+/// its logs. A brain-mode sidecar has no local node to bridge, so it runs as an
+/// `Exporter` only. Selected by `FIDUCIA_SIDECAR_ROLE` (`full` | `exporter`), and
+/// forced to `Exporter` whenever `FIDUCIA_EXPORT_TARGET=brain` (a brain sidecar
+/// must never register itself as a node).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SidecarRole {
+    Full,
+    Exporter,
+}
+
+impl SidecarRole {
+    fn from_env() -> Self {
+        Self::classify(
+            std::env::var("FIDUCIA_SIDECAR_ROLE").ok().as_deref(),
+            std::env::var("FIDUCIA_EXPORT_TARGET").ok().as_deref(),
+        )
+    }
+
+    /// Pure classifier (testable without touching the process environment).
+    fn classify(role: Option<&str>, export_target: Option<&str>) -> Self {
+        if matches!(
+            export_target.map(|t| t.trim().to_ascii_lowercase()).as_deref(),
+            Some("brain")
+        ) {
+            return Self::Exporter;
+        }
+        match role.map(|r| r.trim().to_ascii_lowercase()).as_deref() {
+            Some("exporter") => Self::Exporter,
+            _ => Self::Full,
+        }
+    }
+
+    fn runs_node_bridge(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 /// Parse a positive millisecond interval from the environment. Missing,
 /// unparsable, and zero values all fall back to `default_ms`: a zero period
 /// makes `tokio::time::interval` panic, which would silently kill the spawned
