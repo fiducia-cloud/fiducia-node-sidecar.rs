@@ -57,9 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FIDUCIA_BRAIN_URL").unwrap_or_else(|_| "http://localhost:8095".to_string());
     let interval = positive_ms_env("FIDUCIA_HEARTBEAT_MS", 2000);
     let node_meta = NodeMeta::from_env();
+    let role = SidecarRole::from_env();
 
     tracing::info!(
-        "{SERVICE} for node_id={} (node={node_url}, brain={brain_url}, every {:?})",
+        "{SERVICE} for node_id={} role={role:?} (node={node_url}, brain={brain_url}, every {:?})",
         node_meta.node_id,
         interval
     );
@@ -73,19 +74,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &node_meta,
     ));
 
-    // Bridge: heartbeat the local node's status + metadata to the brain.
-    tokio::spawn(heartbeat::run(
-        node_url.clone(),
-        brain_url,
-        node_meta.clone(),
-        interval,
-    ));
+    if role.runs_node_bridge() {
+        // Bridge: heartbeat the local node's status + metadata to the brain.
+        tokio::spawn(heartbeat::run(
+            node_url.clone(),
+            brain_url,
+            node_meta.clone(),
+            interval,
+        ));
 
-    // Observability: ship logs off the box to the telemetry stack.
-    tokio::spawn(collector::ship_logs(
-        std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
-        std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
-    ));
+        // Observability: ship logs off the box to the telemetry stack.
+        tokio::spawn(collector::ship_logs(
+            std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
+            std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
+        ));
+    } else {
+        // Exporter-only (e.g. a brain-mode sidecar): there is no local node to
+        // heartbeat or tail, so only serve `/metrics`.
+        tracing::info!("{SERVICE} exporter-only role: node heartbeat and log-shipping disabled");
+    }
 
     let app = build_router(node_meta, exporter);
 
@@ -122,6 +129,48 @@ fn required_env(name: &str) -> Result<String, std::io::Error> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| std::io::Error::other(format!("{name} must be configured")))
+}
+
+/// What the sidecar runs alongside the `/metrics` exporter.
+///
+/// A node sidecar (`Full`) also heartbeats the local node to the brain and ships
+/// its logs. A brain-mode sidecar has no local node to bridge, so it runs as an
+/// `Exporter` only. Selected by `FIDUCIA_SIDECAR_ROLE` (`full` | `exporter`), and
+/// forced to `Exporter` whenever `FIDUCIA_EXPORT_TARGET=brain` (a brain sidecar
+/// must never register itself as a node).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SidecarRole {
+    Full,
+    Exporter,
+}
+
+impl SidecarRole {
+    fn from_env() -> Self {
+        Self::classify(
+            std::env::var("FIDUCIA_SIDECAR_ROLE").ok().as_deref(),
+            std::env::var("FIDUCIA_EXPORT_TARGET").ok().as_deref(),
+        )
+    }
+
+    /// Pure classifier (testable without touching the process environment).
+    fn classify(role: Option<&str>, export_target: Option<&str>) -> Self {
+        if matches!(
+            export_target
+                .map(|t| t.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("brain")
+        ) {
+            return Self::Exporter;
+        }
+        match role.map(|r| r.trim().to_ascii_lowercase()).as_deref() {
+            Some("exporter") => Self::Exporter,
+            _ => Self::Full,
+        }
+    }
+
+    fn runs_node_bridge(self) -> bool {
+        matches!(self, Self::Full)
+    }
 }
 
 /// Parse a positive millisecond interval from the environment. Missing,
@@ -184,6 +233,44 @@ mod interval_tests {
         assert_eq!(
             positive_ms(Some("250".into()), 2000),
             Duration::from_millis(250)
+        );
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::SidecarRole;
+
+    #[test]
+    fn default_and_full_role_run_the_node_bridge() {
+        assert_eq!(SidecarRole::classify(None, None), SidecarRole::Full);
+        assert_eq!(SidecarRole::classify(Some("full"), None), SidecarRole::Full);
+        assert_eq!(
+            SidecarRole::classify(Some(" FULL "), Some("node")),
+            SidecarRole::Full
+        );
+        assert!(SidecarRole::Full.runs_node_bridge());
+    }
+
+    #[test]
+    fn explicit_exporter_role_skips_the_node_bridge() {
+        assert_eq!(
+            SidecarRole::classify(Some("exporter"), None),
+            SidecarRole::Exporter
+        );
+        assert!(!SidecarRole::Exporter.runs_node_bridge());
+    }
+
+    #[test]
+    fn brain_export_target_forces_exporter_even_if_role_says_full() {
+        // A brain sidecar must never heartbeat itself in as a node.
+        assert_eq!(
+            SidecarRole::classify(Some("full"), Some("brain")),
+            SidecarRole::Exporter
+        );
+        assert_eq!(
+            SidecarRole::classify(None, Some(" Brain ")),
+            SidecarRole::Exporter
         );
     }
 }
