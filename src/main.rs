@@ -236,6 +236,44 @@ mod interval_tests {
 }
 
 #[cfg(test)]
+mod role_tests {
+    use super::SidecarRole;
+
+    #[test]
+    fn default_and_full_role_run_the_node_bridge() {
+        assert_eq!(SidecarRole::classify(None, None), SidecarRole::Full);
+        assert_eq!(SidecarRole::classify(Some("full"), None), SidecarRole::Full);
+        assert_eq!(
+            SidecarRole::classify(Some(" FULL "), Some("node")),
+            SidecarRole::Full
+        );
+        assert!(SidecarRole::Full.runs_node_bridge());
+    }
+
+    #[test]
+    fn explicit_exporter_role_skips_the_node_bridge() {
+        assert_eq!(
+            SidecarRole::classify(Some("exporter"), None),
+            SidecarRole::Exporter
+        );
+        assert!(!SidecarRole::Exporter.runs_node_bridge());
+    }
+
+    #[test]
+    fn brain_export_target_forces_exporter_even_if_role_says_full() {
+        // A brain sidecar must never heartbeat itself in as a node.
+        assert_eq!(
+            SidecarRole::classify(Some("full"), Some("brain")),
+            SidecarRole::Exporter
+        );
+        assert_eq!(
+            SidecarRole::classify(None, Some(" Brain ")),
+            SidecarRole::Exporter
+        );
+    }
+}
+
+#[cfg(test)]
 mod interface_contract_tests {
     use fiducia_interfaces::{LockAcquireManyRequest, ProposeErrorReason};
 
