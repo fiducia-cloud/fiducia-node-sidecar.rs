@@ -41,6 +41,12 @@ aliases = ["export-target"]
 type = "string"
 help = "Which plane /metrics exports: node or brain."
 
+[flags.sidecar-role]
+env = "FIDUCIA_SIDECAR_ROLE"
+aliases = ["sidecar-role"]
+type = "string"
+help = "full (node bridge + exporter) or exporter (metrics only). Forced to exporter when export-target=brain."
+
 [flags.observe-timeout-ms]
 env = "FIDUCIA_OBSERVE_TIMEOUT_MS"
 aliases = ["observe-timeout-ms"]

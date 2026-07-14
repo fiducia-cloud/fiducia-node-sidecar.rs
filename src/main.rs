@@ -155,7 +155,9 @@ impl SidecarRole {
     /// Pure classifier (testable without touching the process environment).
     fn classify(role: Option<&str>, export_target: Option<&str>) -> Self {
         if matches!(
-            export_target.map(|t| t.trim().to_ascii_lowercase()).as_deref(),
+            export_target
+                .map(|t| t.trim().to_ascii_lowercase())
+                .as_deref(),
             Some("brain")
         ) {
             return Self::Exporter;
