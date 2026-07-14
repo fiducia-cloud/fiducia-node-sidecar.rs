@@ -57,9 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FIDUCIA_BRAIN_URL").unwrap_or_else(|_| "http://localhost:8095".to_string());
     let interval = positive_ms_env("FIDUCIA_HEARTBEAT_MS", 2000);
     let node_meta = NodeMeta::from_env();
+    let role = SidecarRole::from_env();
 
     tracing::info!(
-        "{SERVICE} for node_id={} (node={node_url}, brain={brain_url}, every {:?})",
+        "{SERVICE} for node_id={} role={role:?} (node={node_url}, brain={brain_url}, every {:?})",
         node_meta.node_id,
         interval
     );
@@ -73,19 +74,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &node_meta,
     ));
 
-    // Bridge: heartbeat the local node's status + metadata to the brain.
-    tokio::spawn(heartbeat::run(
-        node_url.clone(),
-        brain_url,
-        node_meta.clone(),
-        interval,
-    ));
+    if role.runs_node_bridge() {
+        // Bridge: heartbeat the local node's status + metadata to the brain.
+        tokio::spawn(heartbeat::run(
+            node_url.clone(),
+            brain_url,
+            node_meta.clone(),
+            interval,
+        ));
 
-    // Observability: ship logs off the box to the telemetry stack.
-    tokio::spawn(collector::ship_logs(
-        std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
-        std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
-    ));
+        // Observability: ship logs off the box to the telemetry stack.
+        tokio::spawn(collector::ship_logs(
+            std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
+            std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
+        ));
+    } else {
+        // Exporter-only (e.g. a brain-mode sidecar): there is no local node to
+        // heartbeat or tail, so only serve `/metrics`.
+        tracing::info!("{SERVICE} exporter-only role: node heartbeat and log-shipping disabled");
+    }
 
     let app = build_router(node_meta, exporter);
 
