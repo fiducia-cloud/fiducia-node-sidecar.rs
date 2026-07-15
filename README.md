@@ -19,6 +19,26 @@ node has no `/metrics` route of its own to re-expose; the sidecar renders one fr
 the JSON introspection instead.) A dedicated Vector or Fluent Bit sidecar can
 replace log shipping in larger installs by leaving the log source and sink unset.
 
+## One sidecar image, per-pod roles
+
+This is deliberately the **only** sidecar image in the fleet — the same binary
+runs next to every `fiducia-node` *and* every `fiducia-brain` member, selected
+by role instead of forking a second sidecar project:
+
+| Pod | Role env | What runs |
+|-----|----------|-----------|
+| `fiducia-node` | *(defaults: `FIDUCIA_SIDECAR_ROLE=full`, `FIDUCIA_EXPORT_TARGET=node`)* | heartbeat bridge → brain, log shipping, `/metrics` from the node observe API |
+| `fiducia-brain` | `FIDUCIA_SIDECAR_ROLE=exporter`, `FIDUCIA_EXPORT_TARGET=brain`, `FIDUCIA_BRAIN_URL=http://localhost:8095` | `/metrics` from the brain's `/v1/status` rollup only |
+
+`FIDUCIA_EXPORT_TARGET=brain` **forces** the exporter-only role even if the role
+env says `full`, so a brain sidecar can never heartbeat itself in as a
+data-plane node (tested in `src/main.rs` `role_tests`). Both roles speak the
+same telemetry contract: trusted-hop auth on every upstream fetch, identity
+const-labels on every family, `fiducia_sidecar_scrape_up{target=...}` on scrape
+failure, and shared-`fiducia-telemetry` logs/traces. The deployment wiring lives
+in `fiducia-infra/base/node/statefulset.yaml` (full mode) and
+`fiducia-infra/base/components/brain/statefulset.yaml` (exporter mode).
+
 ## Why split it out
 
 The node should do exactly one thing well: sharded Raft coordination. Everything

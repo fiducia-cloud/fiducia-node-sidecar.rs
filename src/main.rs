@@ -424,6 +424,13 @@ mod metrics_endpoint_tests {
         }
     }
 
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("test client")
+    }
+
     #[tokio::test]
     async fn metrics_endpoint_presents_internal_auth_and_never_sends_org_header() {
         let seen = Captured::default();
@@ -440,7 +447,7 @@ mod metrics_endpoint_tests {
             target: exporter::Target::Node,
             node_url: format!("http://{node_addr}"),
             brain_url: String::new(),
-            timeout: Duration::from_secs(3),
+            client: test_client(),
             secret: Some("test-secret".to_string()),
             labels: exporter::ConstLabels {
                 node_id: "node-a".to_string(),
@@ -499,5 +506,128 @@ mod metrics_endpoint_tests {
                 "exporter must not send an org header to org-exempt observe paths"
             );
         }
+    }
+
+    async fn mock_brain_status(State(seen): State<Captured>, headers: HeaderMap) -> Json<Value> {
+        seen.0.lock().unwrap().push(headers);
+        Json(json!({
+            "brain_cluster": {
+                "is_leader": true,
+                "available": true,
+                "ha_configured": true,
+                "placement_generation": 42
+            },
+            "topology": {
+                "nodes_by_health": { "healthy": 3, "suspect": 1, "dead": 0 }
+            },
+            "placement": {
+                "unplaced_shards": 0,
+                "under_replicated_shards": 2,
+                "leaderless_shards": 0,
+                "shards_with_unhealthy_replicas": 1
+            }
+        }))
+    }
+
+    /// The same sidecar image serves brain pods: `FIDUCIA_EXPORT_TARGET=brain`
+    /// translates the brain's `/v1/status` rollup instead of the node observe
+    /// API, over the same `/metrics` route and the same trusted-hop auth.
+    #[tokio::test]
+    async fn brain_mode_metrics_translate_the_brain_status_rollup() {
+        let seen = Captured::default();
+        let brain_app = Router::new()
+            .route("/v1/status", get(mock_brain_status))
+            .with_state(seen.clone());
+        let brain_addr = spawn(brain_app).await;
+
+        let exporter = Arc::new(exporter::Exporter {
+            target: exporter::Target::Brain,
+            node_url: String::new(),
+            brain_url: format!("http://{brain_addr}"),
+            client: test_client(),
+            secret: Some("test-secret".to_string()),
+            labels: exporter::ConstLabels {
+                node_id: "brain-a".to_string(),
+                region: Some("us-east-1".to_string()),
+            },
+        });
+
+        let meta = NodeMeta {
+            node_id: "brain-a".to_string(),
+            address: format!("http://{brain_addr}"),
+            ..node_meta()
+        };
+        let sidecar_addr = spawn(build_router(meta, exporter, Arc::new(SidecarMetrics::default()))).await;
+
+        let body = reqwest::get(format!("http://{sidecar_addr}/metrics"))
+            .await
+            .expect("scrape the sidecar")
+            .text()
+            .await
+            .expect("read body");
+
+        assert!(body.contains(
+            "fiducia_sidecar_scrape_up{node_id=\"brain-a\",region=\"us-east-1\",target=\"brain\"} 1\n"
+        ));
+        assert!(body.contains("fiducia_brain_up{node_id=\"brain-a\",region=\"us-east-1\"} 1\n"));
+        assert!(
+            body.contains("fiducia_brain_is_leader{node_id=\"brain-a\",region=\"us-east-1\"} 1\n")
+        );
+        assert!(body.contains(
+            "fiducia_brain_nodes_by_health{node_id=\"brain-a\",region=\"us-east-1\",health=\"suspect\"} 1\n"
+        ));
+        assert!(body.contains(
+            "fiducia_placement_under_replicated_shards{node_id=\"brain-a\",region=\"us-east-1\"} 2\n"
+        ));
+
+        let captured = seen.0.lock().unwrap();
+        assert_eq!(captured.len(), 1, "/v1/status fetched once");
+        assert_eq!(
+            captured[0]
+                .get("x-fiducia-internal-auth")
+                .and_then(|v| v.to_str().ok()),
+            Some("test-secret"),
+            "brain-mode exporter must present the internal-auth header on /v1/status"
+        );
+    }
+
+    /// A down export target must keep `/metrics` at 200 with `scrape_up=0` so
+    /// Prometheus records the outage instead of marking the sidecar itself down.
+    #[tokio::test]
+    async fn scrape_failure_reports_scrape_up_zero_but_still_serves() {
+        // Bind-then-drop a listener to get a port with nothing behind it.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        let exporter = Arc::new(exporter::Exporter {
+            target: exporter::Target::Brain,
+            node_url: String::new(),
+            brain_url: format!("http://{dead_addr}"),
+            client: test_client(),
+            secret: Some("test-secret".to_string()),
+            labels: exporter::ConstLabels {
+                node_id: "brain-a".to_string(),
+                region: None,
+            },
+        });
+        let sidecar_addr = spawn(build_router(node_meta(), exporter, Arc::new(SidecarMetrics::default()))).await;
+
+        let response = reqwest::get(format!("http://{sidecar_addr}/metrics"))
+            .await
+            .expect("scrape the sidecar");
+        assert_eq!(response.status(), 200, "a failed scrape must still 200");
+        let body = response.text().await.expect("read body");
+
+        assert!(body.contains("fiducia_sidecar_up 1\n"));
+        assert!(
+            body.contains("fiducia_sidecar_scrape_up{node_id=\"brain-a\",target=\"brain\"} 0\n"),
+            "scrape_up must be 0 when the target is unreachable: {body}"
+        );
+        assert!(body.contains("# brain scrape failed (unreachable)"));
+        assert!(
+            !body.contains("fiducia_brain_up"),
+            "no translated families may be emitted for a failed scrape"
+        );
     }
 }
