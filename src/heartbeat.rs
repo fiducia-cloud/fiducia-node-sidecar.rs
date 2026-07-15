@@ -273,10 +273,14 @@ fn sort_dedup(shards: &mut Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Path, State};
     use axum::http::StatusCode;
-    use axum::routing::get;
-    use axum::Router;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    type HeartbeatCapture = Arc<Mutex<Option<(String, Value)>>>;
 
     async fn mock_node(status: StatusCode, body: &'static str) -> String {
         let app = Router::new().route("/v1/status", get(move || async move { (status, body) }));
@@ -401,5 +405,58 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, ScrapeFailure::Decode);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_posts_the_monotonic_sequence_and_failure_domain_contract() {
+        let captured: HeartbeatCapture = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route(
+                "/v1/nodes/:node_id/heartbeat",
+                post(
+                    |State(captured): State<HeartbeatCapture>,
+                     Path(node_id): Path<String>,
+                     Json(body): Json<Value>| async move {
+                        *captured.lock().unwrap() = Some((node_id, body));
+                        StatusCode::NO_CONTENT
+                    },
+                ),
+            )
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let meta = NodeMeta {
+            node_id: "fiducia-node-2.gcp".to_string(),
+            address: "http://10.0.0.12:8090".to_string(),
+            region: Some("gcp".to_string()),
+            availability_zone: Some("us-central1-a".to_string()),
+            rack: None,
+            version: Some("v1".to_string()),
+        };
+        send_heartbeat(
+            &reqwest::Client::new(),
+            &format!("http://{address}"),
+            &meta,
+            NodeStatusSummary {
+                leading_shards: vec![3, 7],
+                following_shards: vec![1],
+                hosted_shards: vec![1, 3, 7],
+            },
+            42,
+        )
+        .await
+        .unwrap();
+
+        let (node_id, body) = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(node_id, "fiducia-node-2.gcp");
+        assert_eq!(body["address"], "http://10.0.0.12:8090");
+        assert_eq!(body["failure_domain"], "gcp");
+        assert_eq!(body["hosted_shards"], json!([1, 3, 7]));
+        assert_eq!(body["leading_shards"], json!([3, 7]));
+        assert_eq!(body["seq"], 42);
     }
 }

@@ -103,4 +103,28 @@ mod tests {
         assert!(output.contains("fiducia_sidecar_log_bytes_shipped_total 17\n"));
         assert!(output.contains("fiducia_sidecar_log_ship_failures_total 0\n"));
     }
+
+    #[test]
+    fn counters_accumulate_without_cross_talk_between_delivery_paths() {
+        let metrics = SidecarMetrics::default();
+        metrics.node_scrape_attempt();
+        metrics.node_scrape_attempt();
+        metrics.node_scrape_failure();
+        metrics.heartbeat_attempt();
+        metrics.heartbeat_success();
+        metrics.log_read_failure();
+        metrics.log_ship_failure();
+        metrics.log_ship_success(7);
+        metrics.log_ship_success(11);
+
+        let output = metrics.render();
+        assert!(output.contains("fiducia_sidecar_node_scrape_attempts_total 2\n"));
+        assert!(output.contains("fiducia_sidecar_node_scrape_failures_total 1\n"));
+        assert!(output.contains("fiducia_sidecar_heartbeat_successes_total 1\n"));
+        assert!(output.contains("fiducia_sidecar_heartbeat_failures_total 0\n"));
+        assert!(output.contains("fiducia_sidecar_log_read_failures_total 1\n"));
+        assert!(output.contains("fiducia_sidecar_log_ship_successes_total 2\n"));
+        assert!(output.contains("fiducia_sidecar_log_ship_failures_total 1\n"));
+        assert!(output.contains("fiducia_sidecar_log_bytes_shipped_total 18\n"));
+    }
 }
