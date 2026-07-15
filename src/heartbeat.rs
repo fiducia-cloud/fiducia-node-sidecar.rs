@@ -6,10 +6,11 @@
 //! `/v1/nodes/{id}/heartbeat`. This keeps the **node decoupled** from the control
 //! plane: the node doesn't need to know the brain exists; the sidecar bridges.
 //!
-//! Caveat (flagged, not resolved): if liveness is reported *only* by the sidecar,
-//! a dead sidecar looks like a dead node. Either tie sidecar liveness to the
-//! node's, or keep a minimal direct node→brain ping and let the sidecar own only
-//! the richer metadata.
+//! Liveness is deliberately reported only by the sidecar. If the sidecar cannot
+//! observe the local node or reach the brain, the brain must stop treating that
+//! node as schedulable; claiming health from the node process alone would hide a
+//! broken control-plane path. Kubernetes restarts the failed sidecar container,
+//! while the brain's failure detector keeps placement fail-closed in the interim.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,9 +20,16 @@ use serde_json::Value;
 
 use crate::auth::attach;
 use crate::meta::NodeMeta;
+use crate::metrics::SidecarMetrics;
 
 /// Run the heartbeat loop forever.
-pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: Duration) {
+pub async fn run(
+    node_url: String,
+    brain_url: String,
+    meta: NodeMeta,
+    interval: Duration,
+    metrics: std::sync::Arc<SidecarMetrics>,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -32,20 +40,39 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
     // ignores any heartbeat whose seq is not strictly newer than the last seen,
     // so reordered/duplicated deliveries can't revert newer reported state.
     let seq = AtomicU64::new(now_ms());
+    let node_endpoint = crate::endpoint_label(&node_url);
+    let brain_endpoint = crate::endpoint_label(&brain_url);
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
+        metrics.node_scrape_attempt();
         match scrape_node_status(&client, &node_url).await {
-            Some(status) => {
+            Ok(status) => {
                 let n = seq.fetch_add(1, Ordering::Relaxed);
+                metrics.heartbeat_attempt();
                 if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status, n).await {
-                    tracing::warn!("heartbeat to brain {brain_url} failed: {err}");
+                    metrics.heartbeat_failure();
+                    tracing::warn!(
+                        endpoint = %brain_endpoint,
+                        timeout = err.is_timeout(),
+                        connect = err.is_connect(),
+                        status = err.status().map(|status| status.as_u16()),
+                        "heartbeat to brain failed"
+                    );
+                } else {
+                    metrics.heartbeat_success();
                 }
             }
-            None => {
+            Err(error) => {
+                metrics.node_scrape_failure();
                 // Node unreachable: skip and let the brain's failure detector
                 // notice the missed heartbeats (Healthy → Suspect → Dead).
-                tracing::warn!("local node {node_url} unreachable; skipping heartbeat");
+                tracing::warn!(
+                    endpoint = %node_endpoint,
+                    failure = error.kind(),
+                    status = error.status(),
+                    "local node status unavailable; skipping heartbeat"
+                );
             }
         }
     }
@@ -75,16 +102,64 @@ struct HeartbeatBody {
 
 /// `GET {node_url}/v1/status` → distill the `consensus` block to what the brain
 /// needs (which shards this node hosts, and which it leads).
-async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
+#[derive(Debug, PartialEq, Eq)]
+enum ScrapeFailure {
+    Timeout,
+    Connect,
+    Status(u16),
+    Decode,
+    Request,
+}
+
+impl ScrapeFailure {
+    fn from_reqwest(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_connect() {
+            Self::Connect
+        } else if let Some(status) = error.status() {
+            Self::Status(status.as_u16())
+        } else if error.is_decode() {
+            Self::Decode
+        } else {
+            Self::Request
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Status(_) => "status",
+            Self::Decode => "decode",
+            Self::Request => "request",
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        match self {
+            Self::Status(status) => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+async fn scrape_node_status(
+    client: &reqwest::Client,
+    node_url: &str,
+) -> Result<NodeStatusSummary, ScrapeFailure> {
     let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
-    let body: Value = attach(client.get(url))
+    let response = attach(client.get(url))
         .send()
         .await
-        .ok()?
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?
+        .error_for_status()
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?;
+    let body: Value = response
         .json()
         .await
-        .ok()?;
-    Some(status_from_value(&body))
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?;
+    Ok(status_from_value(&body))
 }
 
 fn status_from_value(body: &Value) -> NodeStatusSummary {
@@ -198,7 +273,20 @@ fn sort_dedup(shards: &mut Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use axum::Router;
     use serde_json::json;
+
+    async fn mock_node(status: StatusCode, body: &'static str) -> String {
+        let app = Router::new().route("/v1/status", get(move || async move { (status, body) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
 
     #[test]
     fn status_parser_extracts_leading_and_hosted_shards() {
@@ -295,5 +383,23 @@ mod tests {
         let shards = u32_array(&json!([4, -1, "5", 4294967295u64, 4294967296u64, null]));
 
         assert_eq!(shards, vec![4, u32::MAX]);
+    }
+
+    #[tokio::test]
+    async fn scrape_rejects_an_upstream_error_instead_of_reporting_empty_topology() {
+        let base = mock_node(StatusCode::SERVICE_UNAVAILABLE, "try later").await;
+        let error = scrape_node_status(&reqwest::Client::new(), &base)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ScrapeFailure::Status(503));
+    }
+
+    #[tokio::test]
+    async fn scrape_rejects_a_malformed_status_document() {
+        let base = mock_node(StatusCode::OK, "not-json").await;
+        let error = scrape_node_status(&reqwest::Client::new(), &base)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ScrapeFailure::Decode);
     }
 }

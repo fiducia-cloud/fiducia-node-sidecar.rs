@@ -20,6 +20,7 @@ mod collector;
 mod exporter;
 mod heartbeat;
 mod meta;
+mod metrics;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use tower_http::{
 
 use exporter::Exporter;
 use meta::NodeMeta;
+use metrics::SidecarMetrics;
 
 const SERVICE: &str = "fiducia-node-sidecar";
 
@@ -58,10 +60,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let interval = positive_ms_env("FIDUCIA_HEARTBEAT_MS", 2000);
     let node_meta = NodeMeta::from_env();
     let role = SidecarRole::from_env();
+    let sidecar_metrics = Arc::new(SidecarMetrics::default());
 
     tracing::info!(
-        "{SERVICE} for node_id={} role={role:?} (node={node_url}, brain={brain_url}, every {:?})",
+        "{SERVICE} for node_id={} role={role:?} (node={}, brain={}, every {:?})",
         node_meta.node_id,
+        endpoint_label(&node_url),
+        endpoint_label(&brain_url),
         interval
     );
 
@@ -81,20 +86,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             brain_url,
             node_meta.clone(),
             interval,
-        ));
-
-        // Observability: ship logs off the box to the telemetry stack.
-        tokio::spawn(collector::ship_logs(
-            std::env::var("FIDUCIA_NODE_LOG_SOURCE").unwrap_or_default(),
-            std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
+            sidecar_metrics.clone(),
         ));
     } else {
-        // Exporter-only (e.g. a brain-mode sidecar): there is no local node to
-        // heartbeat or tail, so only serve `/metrics`.
-        tracing::info!("{SERVICE} exporter-only role: node heartbeat and log-shipping disabled");
+        // Exporter-only (e.g. a brain-mode sidecar) never registers a node.
+        tracing::info!("{SERVICE} exporter-only role: node heartbeat disabled");
     }
 
-    let app = build_router(node_meta, exporter);
+    // Log forwarding is independent of the node-heartbeat role. The generic
+    // source lets the same image observe a brain or another Fiducia workload;
+    // the node-specific name remains a compatibility fallback.
+    let log_source = std::env::var("FIDUCIA_LOG_SOURCE")
+        .or_else(|_| std::env::var("FIDUCIA_NODE_LOG_SOURCE"))
+        .unwrap_or_default();
+    tokio::spawn(collector::ship_logs(
+        log_source,
+        std::env::var("FIDUCIA_LOG_SINK").unwrap_or_default(),
+        sidecar_metrics.clone(),
+    ));
+
+    let app = build_router(node_meta, exporter, sidecar_metrics);
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -110,12 +121,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Assemble the sidecar's HTTP surface. Shared by `main` and the tests so both
 /// exercise the exact same routes, handlers, and hardening layers.
-fn build_router(node_meta: NodeMeta, exporter: Arc<Exporter>) -> Router {
+fn build_router(
+    node_meta: NodeMeta,
+    exporter: Arc<Exporter>,
+    sidecar_metrics: Arc<SidecarMetrics>,
+) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(health))
         .route("/meta", get(move || meta_handler(node_meta.clone())))
-        .route("/metrics", get(move || metrics(exporter.clone())))
+        .route(
+            "/metrics",
+            get(move || metrics(exporter.clone(), sidecar_metrics.clone())),
+        )
         // Hardening stack (outermost last): catch handler panics → 500, bound
         // request time, and cap body size.
         .layer(TraceLayer::new_for_http())
@@ -129,6 +147,21 @@ fn required_env(name: &str) -> Result<String, std::io::Error> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| std::io::Error::other(format!("{name} must be configured")))
+}
+
+/// Credential-safe endpoint label for logs. Paths, query strings, fragments,
+/// and userinfo are never operational dimensions and may contain secrets.
+pub(crate) fn endpoint_label(raw: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return "invalid-endpoint".to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return "invalid-endpoint".to_string();
+    };
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    }
 }
 
 /// What the sidecar runs alongside the `/metrics` exporter.
@@ -203,13 +236,14 @@ async fn meta_handler(node_meta: NodeMeta) -> Json<Value> {
 /// Prefixes a `fiducia_sidecar_up` gauge (this endpoint is serving); the exporter
 /// then appends `fiducia_sidecar_scrape_up{target=...}` so a failed upstream fetch
 /// is visible as `up=0` even while this endpoint returns 200.
-async fn metrics(exporter: Arc<Exporter>) -> String {
+async fn metrics(exporter: Arc<Exporter>, sidecar_metrics: Arc<SidecarMetrics>) -> String {
     let body = exporter.render().await;
+    let local = sidecar_metrics.render();
     format!(
         "# HELP fiducia_sidecar_up Whether the fiducia node sidecar is serving.\n\
          # TYPE fiducia_sidecar_up gauge\n\
          fiducia_sidecar_up 1\n\
-         {body}"
+         {body}{local}"
     )
 }
 
@@ -234,6 +268,15 @@ mod interval_tests {
             positive_ms(Some("250".into()), 2000),
             Duration::from_millis(250)
         );
+    }
+
+    #[test]
+    fn endpoint_labels_drop_credentials_paths_queries_and_fragments() {
+        assert_eq!(
+            endpoint_label("https://user:secret@brain.example:9443/private?token=x#fragment"),
+            "https://brain.example:9443",
+        );
+        assert_eq!(endpoint_label("not a url"), "invalid-endpoint");
     }
 }
 
@@ -405,7 +448,12 @@ mod metrics_endpoint_tests {
             },
         });
 
-        let sidecar_addr = spawn(build_router(node_meta(), exporter)).await;
+        let sidecar_addr = spawn(build_router(
+            node_meta(),
+            exporter,
+            Arc::new(SidecarMetrics::default()),
+        ))
+        .await;
 
         let response = reqwest::get(format!("http://{sidecar_addr}/metrics"))
             .await

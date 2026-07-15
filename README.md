@@ -1,15 +1,16 @@
 # fiducia-node-sidecar
 
-The per-node **operational sidecar** for [fiducia.cloud](https://fiducia.cloud).
-One runs alongside each [`fiducia-node`](https://github.com/fiducia-cloud/fiducia-node.rs)
-(same pod, localhost to the node) and owns everything *operational* so the node
-binary stays a pure coordination engine.
+The shared **operational sidecar** for [fiducia.cloud](https://fiducia.cloud).
+The same binary and image run beside both
+[`fiducia-node`](https://github.com/fiducia-cloud/fiducia-node.rs) and
+[`fiducia-brain`](https://github.com/fiducia-cloud/fiducia-brain.rs), configured
+per pod so both Raft binaries stay focused on coordination.
 
 The **control-plane bridge is implemented**: on a timer it scrapes the local
 node's `/v1/status` and POSTs a heartbeat (address, failure domain = region, and
 the shards it hosts/leads) to the brain's `/v1/nodes/{id}/heartbeat`.
 
-The observability path is implemented too: it tails a configured node log and
+The observability path is implemented too: it can tail a configured workload log and
 forwards new chunks to tracing or an HTTP sink, and it exposes a Prometheus
 `/metrics` endpoint that **translates** the node's structured observability API
 (`/v1/observe/shards`, `/v1/observe/metrics`, `/readyz`) — or, in `brain` mode,
@@ -27,7 +28,7 @@ here, so the node has no dependency on the brain or the telemetry stack.
 | Concern | What the sidecar does | Goes to |
 |---------|-----------------------|---------|
 | **Control-plane bridge** | scrape local node `/v1/status`; heartbeat liveness + reported shards + node **metadata** (region/AZ/rack) | `fiducia-brain` |
-| **Logs** | tail the node's stdout/log file and ship | log backend (Loki / Vector pipeline) |
+| **Logs** | optionally tail the colocated workload's log file and ship | log backend (Loki / Vector pipeline) |
 | **Metrics** | translate the node's observe API (or the brain's `/v1/status`) into Prometheus text, annotated with node identity | Prometheus |
 
 Note: data-plane **Raft logs are never shipped** anywhere — their durability is
@@ -63,6 +64,7 @@ shard's replicas so one rack/zone loss can't take a quorum.
 | `src/meta.rs`     | node identity + failure-domain metadata                 |
 | `src/collector.rs`| node log shipping                                       |
 | `src/exporter.rs` | translate node/brain introspection → Prometheus metrics |
+| `src/metrics.rs`  | local heartbeat, scrape, and log-delivery counters       |
 | `src/auth.rs`     | shared trusted-hop `x-fiducia-internal-auth` header     |
 
 ## Configuration
@@ -78,7 +80,7 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_NODE_URL` | string | `http://localhost:8090` | no | Base URL of the local node the sidecar scrapes (`/v1/status` for heartbeat; `/v1/observe/shards`, `/v1/observe/metrics`, `/readyz` for the exporter). |
 | `FIDUCIA_BRAIN_URL` | string | `http://localhost:8095` | no | Base URL of the control-plane brain to heartbeat to (and to scrape `/v1/status` from in `brain` export mode). |
 | `FIDUCIA_EXPORT_TARGET` | `node` \| `brain` | `node` | no | Which plane `/metrics` exports. `node` translates the local node's observe API; `brain` translates the brain's `/v1/status` cluster rollup. Unrecognized values fall back to `node`. |
-| `FIDUCIA_SIDECAR_ROLE` | `full` \| `exporter` | `full` | no | `full` also heartbeats the local node to the brain and ships its logs; `exporter` serves only `/metrics`. Forced to `exporter` when `FIDUCIA_EXPORT_TARGET=brain` (a brain sidecar has no local node to bridge and must never register itself as one). |
+| `FIDUCIA_SIDECAR_ROLE` | `full` \| `exporter` | `full` | no | `full` also heartbeats the local node to the brain; `exporter` never registers a node. Forced to `exporter` when `FIDUCIA_EXPORT_TARGET=brain`. Log forwarding is configured independently in either role. |
 | `FIDUCIA_OBSERVE_TIMEOUT_MS` | positive integer | `3000` | no | Per-fetch timeout the exporter applies to each upstream call. Zero, negative, or unparsable values fall back to the default. |
 | `FIDUCIA_HEARTBEAT_MS` | positive integer | `2000` | no | Heartbeat interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of panicking the background task. |
 | `FIDUCIA_NODE_ADDRESS` | string | `http://localhost:8090` | no | Address peers/clients reach the node at (advertised to the brain). |
@@ -86,7 +88,8 @@ is **required**: the process refuses to start without it (see *Trust boundary*).
 | `FIDUCIA_AZ` | string | *(unset)* | no | Availability zone (failure-domain metadata). |
 | `FIDUCIA_RACK` | string | *(unset)* | no | Rack (failure-domain metadata). |
 | `FIDUCIA_NODE_VERSION` | string | *(unset)* | no | Reported node version (metadata). |
-| `FIDUCIA_NODE_LOG_SOURCE` | string | *(unset)* | no | Path to the node log file to tail and ship. Empty disables log shipping. |
+| `FIDUCIA_LOG_SOURCE` | string | *(unset)* | no | Path to the colocated workload log file to tail and ship. Empty disables log shipping. |
+| `FIDUCIA_NODE_LOG_SOURCE` | string | *(unset)* | no | Legacy fallback used only when `FIDUCIA_LOG_SOURCE` is unset. |
 | `FIDUCIA_LOG_SINK` | string | *(unset)* | no | Log sink: `stdout`, `stderr`, `tracing`, or an HTTP(S) endpoint. Empty disables log shipping. |
 | `FIDUCIA_LOG_SHIP_INTERVAL_MS` | positive integer | `5000` | no | Log-shipping poll interval, milliseconds. Zero, negative, or unparsable values fall back to the default instead of busy-looping. |
 
@@ -123,6 +126,22 @@ FIDUCIA_BRAIN_URL=http://localhost:8095 FIDUCIA_AZ=us-east-1a cargo run --locked
 Use a throwaway value for `FIDUCIA_INTERNAL_SECRET` in dev; in production it must
 match the node's and brain's configured trusted-hop secret and be delivered as a
 real secret (never committed, never a shell-history literal).
+
+## One image, two pod profiles
+
+Run one sidecar **per workload pod** so localhost, lifecycle, and identity remain
+aligned; do not share one process between several pods.
+
+| Colocated workload | `FIDUCIA_EXPORT_TARGET` | `FIDUCIA_SIDECAR_ROLE` | Behavior |
+| --- | --- | --- | --- |
+| `fiducia-node` | `node` | `full` | translate node metrics, heartbeat node metadata to brain, optionally forward a configured log file |
+| `fiducia-brain` | `brain` | `exporter` | translate brain/placement metrics, never register a node, optionally forward a configured log file |
+
+Both profiles initialize `fiducia-telemetry`, export structured logs/optional
+OTLP traces, and expose sidecar-local scrape, heartbeat, and log-delivery counters
+on `/metrics`. In Kubernetes, the cluster OTel agent remains the preferred owner
+for pod stdout/stderr; leave file forwarding unset unless a shared log volume is
+deliberately configured.
 
 ### Reproducible container and CI dependency
 
@@ -174,6 +193,14 @@ Hardening applied / verified:
   as positive milliseconds; missing, zero, negative, and malformed values use
   their documented defaults so heartbeat cannot panic and log shipping cannot
   spin in a zero-delay loop.
+- **Credential-safe upstream errors** — node and brain endpoint labels strip
+  user information, paths, queries, and fragments before logging. Background
+  request failures are classified (timeout, connect, status, or response)
+  without recording raw URLs, bearer material, or response bodies.
+- **Visible background failures** — node scrape, heartbeat, log-read, and log
+  delivery outcomes have dedicated Prometheus counters. Invalid UTF-8 in a log
+  file is lossily decoded while the byte offset still advances, avoiding a
+  repeated poison-chunk loop.
 - **No unsafe / no reachable panics** — no `unsafe` blocks; network-facing paths
   use fallible parsing and `unwrap_or_*` fallbacks rather than `unwrap()/expect()`.
 - **No timing-unsafe secret comparison** — the secret is only presented outbound,
