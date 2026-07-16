@@ -460,6 +460,88 @@ mod tests {
         assert_eq!(body["seq"], 42);
     }
 
+    /// When the LOCAL NODE is unreachable, the sidecar must go silent toward
+    /// the brain: node_scrape_failures counts every failed scrape while
+    /// heartbeat_attempts stays 0 and the brain endpoint receives nothing.
+    /// The brain's failure detector must see missed heartbeats - never a
+    /// fabricated heartbeat for a node the sidecar cannot observe.
+    #[tokio::test]
+    async fn unreachable_node_counts_scrape_failures_and_sends_no_heartbeat() {
+        let node_url = mock_node(StatusCode::INTERNAL_SERVER_ERROR, "node down").await;
+
+        let brain_hits: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/:id/heartbeat",
+            post(
+                move |Path(_id): Path<String>, State(hits): State<Arc<Mutex<u32>>>| async move {
+                    *hits.lock().unwrap() += 1;
+                    StatusCode::OK
+                },
+            )
+            .with_state(brain_hits.clone()),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let brain_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let metrics = Arc::new(crate::metrics::SidecarMetrics::default());
+        let handle = tokio::spawn(run(
+            node_url,
+            brain_url,
+            NodeMeta {
+                node_id: "hb-silent".to_string(),
+                address: "http://localhost:8090".to_string(),
+                region: None,
+                availability_zone: None,
+                rack: None,
+                version: None,
+            },
+            std::time::Duration::from_millis(30),
+            metrics.clone(),
+        ));
+
+        let counter = |rendered: &str, name: &str| -> u64 {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("counter {name} missing in:\n{rendered}"))
+        };
+        // Bounded wait for several failed scrape cycles to accumulate.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let rendered = loop {
+            let rendered = metrics.render();
+            if counter(&rendered, "fiducia_sidecar_node_scrape_failures_total") >= 3 {
+                break rendered;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node scrape failures never accumulated; metrics:\n{rendered}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        handle.abort();
+
+        assert_eq!(
+            counter(&rendered, "fiducia_sidecar_heartbeat_attempts_total"),
+            0,
+            "an unobservable node must produce NO heartbeat attempts"
+        );
+        assert_eq!(
+            *brain_hits.lock().unwrap(),
+            0,
+            "the brain endpoint must see silence, not a bogus heartbeat"
+        );
+        // Every scrape cycle was attempted and every one failed.
+        assert!(
+            counter(&rendered, "fiducia_sidecar_node_scrape_attempts_total")
+                >= counter(&rendered, "fiducia_sidecar_node_scrape_failures_total"),
+        );
+    }
+
     /// A flapping brain must be MEASURABLE, not just logged: the sidecar's own
     /// counters record every attempt/failure/success, and the loop keeps
     /// heartbeating through failures without wedging. The mock brain answers

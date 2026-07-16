@@ -278,6 +278,52 @@ mod interval_tests {
         );
         assert_eq!(endpoint_label("not a url"), "invalid-endpoint");
     }
+
+    /// endpoint_label reduces every input to scheme://host[:port] or the safe
+    /// placeholder: a portless URL stays portless, host-less schemes (file,
+    /// mailto, data) and empty input yield "invalid-endpoint", and no label
+    /// ever carries a credential, path, or query fragment of its input.
+    #[test]
+    fn endpoint_labels_never_leak_secrets_and_fail_safe_without_a_host() {
+        assert_eq!(
+            endpoint_label("http://user:pass@host:8095/secret?x=1"),
+            "http://host:8095",
+        );
+        assert_eq!(
+            endpoint_label("http://brain.example/some/path"),
+            "http://brain.example",
+            "a URL without an explicit port must not grow one"
+        );
+        // Parseable URLs with no network host reduce to the placeholder, not
+        // a partial echo of their (possibly sensitive) contents.
+        for host_less in [
+            "file:///etc/passwd",
+            "mailto:oncall@fiducia.cloud",
+            "data:text/plain,secret",
+            "",
+        ] {
+            assert_eq!(
+                endpoint_label(host_less),
+                "invalid-endpoint",
+                "input {host_less:?} must reduce to the safe placeholder"
+            );
+        }
+        // Property: no secret component of the input survives into the label.
+        for raw in [
+            "http://user:pass@host:8095/secret?x=1",
+            "https://alice:hunter2@10.0.0.9:9443/v1/keys?token=abc#frag",
+        ] {
+            let label = endpoint_label(raw);
+            for secret in [
+                "user", "pass", "alice", "hunter2", "secret", "token", "abc", "x=1", "keys", "frag",
+            ] {
+                assert!(
+                    !label.contains(secret),
+                    "label {label:?} for {raw:?} leaked {secret:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -557,7 +603,12 @@ mod metrics_endpoint_tests {
             address: format!("http://{brain_addr}"),
             ..node_meta()
         };
-        let sidecar_addr = spawn(build_router(meta, exporter, Arc::new(SidecarMetrics::default()))).await;
+        let sidecar_addr = spawn(build_router(
+            meta,
+            exporter,
+            Arc::new(SidecarMetrics::default()),
+        ))
+        .await;
 
         let body = reqwest::get(format!("http://{sidecar_addr}/metrics"))
             .await
@@ -611,7 +662,12 @@ mod metrics_endpoint_tests {
                 region: None,
             },
         });
-        let sidecar_addr = spawn(build_router(node_meta(), exporter, Arc::new(SidecarMetrics::default()))).await;
+        let sidecar_addr = spawn(build_router(
+            node_meta(),
+            exporter,
+            Arc::new(SidecarMetrics::default()),
+        ))
+        .await;
 
         let response = reqwest::get(format!("http://{sidecar_addr}/metrics"))
             .await
