@@ -24,9 +24,9 @@ mod metrics;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::{routing::get, Json, Router};
+use axum::{http::StatusCode, routing::get, Json, Router};
 use serde_json::{json, Value};
 use tower_http::{
     catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer, timeout::TimeoutLayer,
@@ -105,7 +105,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sidecar_metrics.clone(),
     ));
 
-    let app = build_router(node_meta, exporter, sidecar_metrics);
+    let readiness_max_age = std::cmp::max(interval.saturating_mul(3), Duration::from_secs(5));
+    let app = build_router_with_readiness(
+        node_meta,
+        exporter,
+        sidecar_metrics,
+        role,
+        readiness_max_age,
+    );
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -121,14 +128,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Assemble the sidecar's HTTP surface. Shared by `main` and the tests so both
 /// exercise the exact same routes, handlers, and hardening layers.
+#[cfg(test)]
 fn build_router(
     node_meta: NodeMeta,
     exporter: Arc<Exporter>,
     sidecar_metrics: Arc<SidecarMetrics>,
 ) -> Router {
+    build_router_with_readiness(
+        node_meta,
+        exporter,
+        sidecar_metrics,
+        SidecarRole::Full,
+        Duration::from_secs(10),
+    )
+}
+
+fn build_router_with_readiness(
+    node_meta: NodeMeta,
+    exporter: Arc<Exporter>,
+    sidecar_metrics: Arc<SidecarMetrics>,
+    role: SidecarRole,
+    heartbeat_max_age: Duration,
+) -> Router {
+    let readiness_metrics = sidecar_metrics.clone();
     Router::new()
         .route("/healthz", get(health))
-        .route("/readyz", get(health))
+        .route(
+            "/readyz",
+            get(move || ready(role, readiness_metrics.clone(), heartbeat_max_age)),
+        )
         .route("/meta", get(move || meta_handler(node_meta.clone())))
         .route(
             "/metrics",
@@ -227,6 +255,59 @@ async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": SERVICE }))
 }
 
+async fn ready(
+    role: SidecarRole,
+    sidecar_metrics: Arc<SidecarMetrics>,
+    heartbeat_max_age: Duration,
+) -> (StatusCode, Json<Value>) {
+    if !role.runs_node_bridge() {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "service": SERVICE,
+                "mode": "exporter"
+            })),
+        );
+    }
+
+    let last_success_ms = sidecar_metrics.last_heartbeat_success_ms();
+    if last_success_ms == 0 {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "starting",
+                "service": SERVICE,
+                "reason": "no_successful_heartbeat"
+            })),
+        );
+    }
+
+    let now = now_ms();
+    let age_ms = now.saturating_sub(last_success_ms);
+    if age_ms > heartbeat_max_age.as_millis() as u64 {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "stale",
+                "service": SERVICE,
+                "reason": "heartbeat_stale",
+                "last_heartbeat_success_age_ms": age_ms,
+                "heartbeat_max_age_ms": heartbeat_max_age.as_millis()
+            })),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "service": SERVICE,
+            "last_heartbeat_success_age_ms": age_ms
+        })),
+    )
+}
+
 /// `GET /meta` — the node metadata this sidecar reports upstream.
 async fn meta_handler(node_meta: NodeMeta) -> Json<Value> {
     Json(json!(node_meta))
@@ -245,6 +326,13 @@ async fn metrics(exporter: Arc<Exporter>, sidecar_metrics: Arc<SidecarMetrics>) 
          fiducia_sidecar_up 1\n\
          {body}{local}"
     )
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -361,6 +449,117 @@ mod role_tests {
             SidecarRole::classify(None, Some(" Brain ")),
             SidecarRole::Exporter
         );
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    async fn spawn(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    fn node_meta() -> NodeMeta {
+        NodeMeta {
+            node_id: "node-a".to_string(),
+            address: "http://localhost:8090".to_string(),
+            region: Some("us-east-1".to_string()),
+            availability_zone: None,
+            rack: None,
+            version: None,
+        }
+    }
+
+    fn test_exporter() -> Arc<Exporter> {
+        Arc::new(exporter::Exporter {
+            target: exporter::Target::Brain,
+            node_url: String::new(),
+            brain_url: "http://127.0.0.1:1".to_string(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_millis(50))
+                .build()
+                .expect("test client"),
+            secret: Some("test-secret".to_string()),
+            labels: exporter::ConstLabels {
+                node_id: "node-a".to_string(),
+                region: Some("us-east-1".to_string()),
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn full_sidecar_is_not_ready_until_a_successful_heartbeat_is_fresh() {
+        let sidecar_metrics = Arc::new(SidecarMetrics::default());
+        let sidecar_addr = spawn(build_router_with_readiness(
+            node_meta(),
+            test_exporter(),
+            sidecar_metrics.clone(),
+            SidecarRole::Full,
+            Duration::from_secs(30),
+        ))
+        .await;
+
+        let starting = reqwest::get(format!("http://{sidecar_addr}/readyz"))
+            .await
+            .expect("query readyz");
+        assert_eq!(starting.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = starting.json().await.expect("ready body");
+        assert_eq!(body["reason"], "no_successful_heartbeat");
+
+        sidecar_metrics.heartbeat_success();
+        let ready = reqwest::get(format!("http://{sidecar_addr}/readyz"))
+            .await
+            .expect("query readyz after heartbeat");
+        assert_eq!(ready.status(), StatusCode::OK);
+        let body: Value = ready.json().await.expect("ready body");
+        assert_eq!(body["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn full_sidecar_readiness_fails_closed_when_the_heartbeat_goes_stale() {
+        let sidecar_metrics = Arc::new(SidecarMetrics::default());
+        sidecar_metrics.heartbeat_success();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let sidecar_addr = spawn(build_router_with_readiness(
+            node_meta(),
+            test_exporter(),
+            sidecar_metrics,
+            SidecarRole::Full,
+            Duration::from_nanos(1),
+        ))
+        .await;
+
+        let stale = reqwest::get(format!("http://{sidecar_addr}/readyz"))
+            .await
+            .expect("query readyz");
+        assert_eq!(stale.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = stale.json().await.expect("ready body");
+        assert_eq!(body["reason"], "heartbeat_stale");
+    }
+
+    #[tokio::test]
+    async fn exporter_only_sidecar_is_ready_without_node_heartbeat() {
+        let sidecar_addr = spawn(build_router_with_readiness(
+            node_meta(),
+            test_exporter(),
+            Arc::new(SidecarMetrics::default()),
+            SidecarRole::Exporter,
+            Duration::from_nanos(1),
+        ))
+        .await;
+
+        let ready = reqwest::get(format!("http://{sidecar_addr}/readyz"))
+            .await
+            .expect("query readyz");
+        assert_eq!(ready.status(), StatusCode::OK);
+        let body: Value = ready.json().await.expect("ready body");
+        assert_eq!(body["mode"], "exporter");
     }
 }
 

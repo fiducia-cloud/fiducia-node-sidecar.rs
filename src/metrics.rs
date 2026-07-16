@@ -1,6 +1,7 @@
 //! Sidecar-local counters, rendered alongside the target's translated metrics.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Default)]
 pub(crate) struct SidecarMetrics {
@@ -9,6 +10,7 @@ pub(crate) struct SidecarMetrics {
     heartbeat_attempts: AtomicU64,
     heartbeat_successes: AtomicU64,
     heartbeat_failures: AtomicU64,
+    last_heartbeat_success_ms: AtomicU64,
     log_read_failures: AtomicU64,
     log_ship_successes: AtomicU64,
     log_ship_failures: AtomicU64,
@@ -27,10 +29,19 @@ impl SidecarMetrics {
     incrementer!(node_scrape_attempt, node_scrape_attempts);
     incrementer!(node_scrape_failure, node_scrape_failures);
     incrementer!(heartbeat_attempt, heartbeat_attempts);
-    incrementer!(heartbeat_success, heartbeat_successes);
     incrementer!(heartbeat_failure, heartbeat_failures);
     incrementer!(log_read_failure, log_read_failures);
     incrementer!(log_ship_failure, log_ship_failures);
+
+    pub(crate) fn heartbeat_success(&self) {
+        self.heartbeat_successes.fetch_add(1, Ordering::Relaxed);
+        self.last_heartbeat_success_ms
+            .store(now_ms(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn last_heartbeat_success_ms(&self) -> u64 {
+        self.last_heartbeat_success_ms.load(Ordering::Relaxed)
+    }
 
     pub(crate) fn log_ship_success(&self, bytes: usize) {
         self.log_ship_successes.fetch_add(1, Ordering::Relaxed);
@@ -62,6 +73,10 @@ impl SidecarMetrics {
                 value(&self.heartbeat_failures),
             ),
             (
+                "fiducia_sidecar_last_heartbeat_success_ms",
+                value(&self.last_heartbeat_success_ms),
+            ),
+            (
                 "fiducia_sidecar_log_read_failures_total",
                 value(&self.log_read_failures),
             ),
@@ -84,6 +99,13 @@ impl SidecarMetrics {
         }
         output
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]

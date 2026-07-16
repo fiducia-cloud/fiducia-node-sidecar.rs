@@ -14,8 +14,6 @@
 //! sets `fiducia_sidecar_scrape_up{target=...} 0` plus a comment naming the
 //! failure class and still returns `200`, so Prometheus records the `up=0` signal.
 
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::meta::NodeMeta;
@@ -849,6 +847,7 @@ fn sanitize_comment(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     fn consts(region: Option<&str>) -> Vec<(&'static str, String)> {
         ConstLabels {
