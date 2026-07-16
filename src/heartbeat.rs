@@ -459,4 +459,93 @@ mod tests {
         assert_eq!(body["leading_shards"], json!([3, 7]));
         assert_eq!(body["seq"], 42);
     }
+
+    /// A flapping brain must be MEASURABLE, not just logged: the sidecar's own
+    /// counters record every attempt/failure/success, and the loop keeps
+    /// heartbeating through failures without wedging. The mock brain answers
+    /// 500 twice, then 200s forever.
+    #[tokio::test]
+    async fn heartbeat_failures_are_counted_and_the_loop_recovers() {
+        let node_url = mock_node(
+            StatusCode::OK,
+            r#"{ "consensus": { "hosted_shards": [0], "leading_shards": [0], "shards": [ { "shard_id": 0, "role": "leader" } ] } }"#,
+        )
+        .await;
+
+        let hits: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/:id/heartbeat",
+            post(
+                move |Path(_id): Path<String>, State(hits): State<Arc<Mutex<u32>>>| async move {
+                    let mut n = hits.lock().unwrap();
+                    *n += 1;
+                    if *n <= 2 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                },
+            )
+            .with_state(hits.clone()),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let brain_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let metrics = Arc::new(crate::metrics::SidecarMetrics::default());
+        let handle = tokio::spawn(run(
+            node_url,
+            brain_url,
+            NodeMeta {
+                node_id: "hb-test".to_string(),
+                address: "http://localhost:8090".to_string(),
+                region: None,
+                availability_zone: None,
+                rack: None,
+                version: None,
+            },
+            std::time::Duration::from_millis(30),
+            metrics.clone(),
+        ));
+
+        // Wait (bounded) on the sidecar's OWN counters: both 500s recorded as
+        // failures AND at least two successes afterwards — proof the loop
+        // survived the outage and the outage is measurable.
+        let counter = |rendered: &str, name: &str| -> u64 {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("counter {name} missing in:\n{rendered}"))
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let rendered = loop {
+            let rendered = metrics.render();
+            if counter(&rendered, "fiducia_sidecar_heartbeat_failures_total") == 2
+                && counter(&rendered, "fiducia_sidecar_heartbeat_successes_total") >= 2
+            {
+                break rendered;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "heartbeat loop did not recover after brain failures; hits={} metrics:\n{}",
+                *hits.lock().unwrap(),
+                rendered
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        handle.abort();
+
+        // Attempts = successes + failures, allowing one in-flight attempt that
+        // was counted before the loop was aborted mid-request.
+        let attempts = counter(&rendered, "fiducia_sidecar_heartbeat_attempts_total");
+        let successes = counter(&rendered, "fiducia_sidecar_heartbeat_successes_total");
+        assert!(
+            attempts >= successes + 2 && attempts <= successes + 3,
+            "attempts ({attempts}) must be successes ({successes}) + 2 failures (± one in-flight)"
+        );
+    }
 }
