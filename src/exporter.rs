@@ -14,8 +14,6 @@
 //! sets `fiducia_sidecar_scrape_up{target=...} 0` plus a comment naming the
 //! failure class and still returns `200`, so Prometheus records the `up=0` signal.
 
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::meta::NodeMeta;
@@ -59,7 +57,7 @@ pub(crate) struct Exporter {
     pub(crate) target: Target,
     pub(crate) node_url: String,
     pub(crate) brain_url: String,
-    pub(crate) timeout: Duration,
+    pub(crate) client: reqwest::Client,
     pub(crate) secret: Option<String>,
     pub(crate) labels: ConstLabels,
 }
@@ -77,7 +75,14 @@ impl Exporter {
             target,
             node_url,
             brain_url,
-            timeout: crate::positive_ms_env("FIDUCIA_OBSERVE_TIMEOUT_MS", 3000),
+            // One client for the sidecar's lifetime (connection reuse on the
+            // localhost scrape path). Fail fast at startup: the old per-scrape
+            // fallback to `Client::new()` silently dropped the timeout, so a hung
+            // upstream could stall every scrape.
+            client: reqwest::Client::builder()
+                .timeout(crate::positive_ms_env("FIDUCIA_OBSERVE_TIMEOUT_MS", 3000))
+                .build()
+                .expect("failed to build the exporter HTTP client"),
             secret: crate::auth::internal_secret().map(str::to_string),
             labels: ConstLabels {
                 node_id: meta.node_id.clone(),
@@ -86,57 +91,62 @@ impl Exporter {
         }
     }
 
-    /// Fetch the configured target and render a Prometheus scrape. Never fails:
-    /// on a fetch error it emits the scrape-down signal and a comment.
+    /// Fetch the configured target and render a Prometheus scrape. Never fails
+    /// the endpoint: on a fetch error it logs, emits the scrape-down signal, and
+    /// still returns a valid exposition body.
     pub(crate) async fn render(&self) -> String {
-        let client = reqwest::Client::builder()
-            .timeout(self.timeout)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         let consts = self.labels.pairs();
 
         let scraped = match self.target {
-            Target::Node => self.scrape_node(&client).await,
-            Target::Brain => self.scrape_brain(&client).await,
+            Target::Node => self.scrape_node().await,
+            Target::Brain => self.scrape_brain().await,
         };
 
         match scraped {
             Ok(families) => render_ok(&consts, self.target, &families),
-            Err(fail) => render_fail(&consts, self.target, &fail),
+            Err(fail) => {
+                // The scrape body only carries `scrape_up=0` + a comment; without
+                // a log line a persistently-down target is invisible to anyone
+                // reading logs instead of metrics.
+                tracing::warn!(
+                    target = self.target.label(),
+                    class = fail.class(),
+                    detail = %fail.detail(),
+                    "sidecar: export-target scrape failed; /metrics reports scrape_up=0"
+                );
+                render_fail(&consts, self.target, &fail)
+            }
         }
     }
 
-    async fn scrape_node(&self, client: &reqwest::Client) -> Result<Vec<Family>, FetchFail> {
+    async fn scrape_node(&self) -> Result<Vec<Family>, FetchFail> {
         let shards = self
-            .fetch_json(client, &self.node_url, "/v1/observe/shards", false)
+            .fetch_json(&self.node_url, "/v1/observe/shards", false)
             .await?;
         let metrics = self
-            .fetch_json(client, &self.node_url, "/v1/observe/metrics", false)
+            .fetch_json(&self.node_url, "/v1/observe/metrics", false)
             .await?;
         // /readyz answers 503 (not 5xx-error) when the node is up but not ready;
         // that is a valid readiness reading, not a scrape failure.
-        let readyz = self
-            .fetch_json(client, &self.node_url, "/readyz", true)
-            .await?;
+        let readyz = self.fetch_json(&self.node_url, "/readyz", true).await?;
         Ok(node_families(&shards, &metrics, &readyz))
     }
 
-    async fn scrape_brain(&self, client: &reqwest::Client) -> Result<Vec<Family>, FetchFail> {
+    async fn scrape_brain(&self) -> Result<Vec<Family>, FetchFail> {
         let status = self
-            .fetch_json(client, &self.brain_url, "/v1/status", false)
+            .fetch_json(&self.brain_url, "/v1/status", false)
             .await?;
         Ok(brain_families(&status))
     }
 
     async fn fetch_json(
         &self,
-        client: &reqwest::Client,
         base: &str,
         path: &str,
         accept_503: bool,
     ) -> Result<Value, FetchFail> {
         let url = format!("{}{}", base.trim_end_matches('/'), path);
-        let response = crate::auth::attach_with(client.get(&url), self.secret.as_deref())
+        let response = crate::auth::attach_with(self.client.get(&url), self.secret.as_deref())
             .send()
             .await
             .map_err(FetchFail::from_reqwest)?;
@@ -837,6 +847,7 @@ fn sanitize_comment(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     fn consts(region: Option<&str>) -> Vec<(&'static str, String)> {
         ConstLabels {
@@ -1205,7 +1216,10 @@ mod tests {
             target,
             node_url,
             brain_url,
-            timeout: Duration::from_millis(timeout_ms),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_millis(timeout_ms))
+                .build()
+                .expect("test client"),
             secret: Some("test-secret".to_string()),
             labels: ConstLabels {
                 node_id: "node-a".to_string(),

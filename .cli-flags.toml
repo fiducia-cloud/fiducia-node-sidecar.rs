@@ -89,11 +89,17 @@ aliases = ["node-version"]
 type = "string"
 help = "Advertised node software version."
 
+[flags.log-source]
+env = "FIDUCIA_LOG_SOURCE"
+aliases = ["log-source"]
+type = "string"
+help = "Local workload log source path. Works for node and brain profiles."
+
 [flags.node-log-source]
 env = "FIDUCIA_NODE_LOG_SOURCE"
 aliases = ["node-log-source"]
 type = "string"
-help = "Local node log source path."
+help = "Deprecated node-only alias for FIDUCIA_LOG_SOURCE."
 
 [flags.log-sink]
 env = "FIDUCIA_LOG_SINK"

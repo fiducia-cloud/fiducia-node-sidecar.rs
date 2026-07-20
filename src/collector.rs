@@ -19,6 +19,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+use crate::metrics::SidecarMetrics;
+
 /// HTTP client for POSTing to the log sink. Short timeout — telemetry must never
 /// block the data plane.
 fn client() -> reqwest::Client {
@@ -35,9 +37,9 @@ fn client() -> reqwest::Client {
 /// shipping (e.g. when an external log agent owns it). Tracks a byte offset across
 /// reads, resets it on truncation (log rotation), and never exits — it's a
 /// background task. Interval is `FIDUCIA_LOG_SHIP_INTERVAL_MS` (default 5s).
-pub async fn ship_logs(node_log_source: String, sink: String) {
-    if node_log_source.trim().is_empty() || sink.trim().is_empty() {
-        tracing::info!("log shipping disabled: FIDUCIA_NODE_LOG_SOURCE or FIDUCIA_LOG_SINK empty");
+pub async fn ship_logs(log_source: String, sink: String, metrics: std::sync::Arc<SidecarMetrics>) {
+    if log_source.trim().is_empty() || sink.trim().is_empty() {
+        tracing::info!("log shipping disabled: FIDUCIA_LOG_SOURCE or FIDUCIA_LOG_SINK empty");
         return;
     }
 
@@ -45,19 +47,16 @@ pub async fn ship_logs(node_log_source: String, sink: String) {
     let mut offset = 0u64;
 
     loop {
-        match read_new_log_bytes(&node_log_source, offset).await {
+        match read_new_log_bytes(&log_source, offset).await {
             Ok((next_offset, chunk)) => {
                 offset = next_offset;
                 if !chunk.is_empty() {
-                    ship_log_chunk(&node_log_source, &sink, chunk).await;
+                    ship_log_chunk(&sink, chunk, &metrics).await;
                 }
             }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    source = %node_log_source,
-                    "failed to read node log source"
-                );
+            Err(_) => {
+                metrics.log_read_failure();
+                tracing::warn!("failed to read configured workload log source");
             }
         }
         tokio::time::sleep(interval).await;
@@ -72,32 +71,56 @@ async fn read_new_log_bytes(
     let offset = if metadata.len() < offset { 0 } else { offset };
     let mut file = tokio::fs::File::open(path).await?;
     file.seek(SeekFrom::Start(offset)).await?;
-    let mut chunk = String::new();
-    file.read_to_string(&mut chunk).await?;
-    Ok((offset.saturating_add(chunk.len() as u64), chunk))
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    let next_offset = offset.saturating_add(bytes.len() as u64);
+    Ok((next_offset, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
-async fn ship_log_chunk(source: &str, sink: &str, chunk: String) {
+async fn ship_log_chunk(sink: &str, chunk: String, metrics: &SidecarMetrics) {
+    let bytes = chunk.len();
     match sink {
         "stdout" | "stderr" | "tracing" => {
-            tracing::info!(source, bytes = chunk.len(), log_chunk = %chunk, "node log chunk");
+            tracing::info!(bytes, log_chunk = %chunk, "workload log chunk");
+            metrics.log_ship_success(bytes);
         }
         sink if sink.starts_with("http://") || sink.starts_with("https://") => {
-            if let Err(err) = client()
+            if let Err(error) = client()
                 .post(sink)
-                .json(&serde_json::json!({ "source": source, "message": chunk }))
+                .json(&serde_json::json!({ "message": chunk }))
                 .send()
                 .await
                 .and_then(|response| response.error_for_status())
             {
-                tracing::warn!(error = %err, sink, "failed to ship node log chunk");
+                metrics.log_ship_failure();
+                tracing::warn!(
+                    endpoint = %crate::endpoint_label(sink),
+                    timeout = error.is_timeout(),
+                    connect = error.is_connect(),
+                    status = error.status().map(|status| status.as_u16()),
+                    "failed to ship workload log chunk"
+                );
+            } else {
+                metrics.log_ship_success(bytes);
             }
         }
         _ => {
-            tracing::warn!(
-                sink,
-                "unsupported log sink; use stdout, stderr, tracing, or HTTP(S)"
-            );
+            metrics.log_ship_failure();
+            tracing::warn!("unsupported log sink; use stdout, stderr, tracing, or HTTP(S)");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unsupported_sink_is_observable_without_echoing_its_value() {
+        let metrics = SidecarMetrics::default();
+        ship_log_chunk("not-a-supported-sink", "payload".into(), &metrics).await;
+        assert!(metrics
+            .render()
+            .contains("fiducia_sidecar_log_ship_failures_total 1\n"));
     }
 }

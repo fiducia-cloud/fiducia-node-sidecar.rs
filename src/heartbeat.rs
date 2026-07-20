@@ -6,10 +6,11 @@
 //! `/v1/nodes/{id}/heartbeat`. This keeps the **node decoupled** from the control
 //! plane: the node doesn't need to know the brain exists; the sidecar bridges.
 //!
-//! Caveat (flagged, not resolved): if liveness is reported *only* by the sidecar,
-//! a dead sidecar looks like a dead node. Either tie sidecar liveness to the
-//! node's, or keep a minimal direct node→brain ping and let the sidecar own only
-//! the richer metadata.
+//! Liveness is deliberately reported only by the sidecar. If the sidecar cannot
+//! observe the local node or reach the brain, the brain must stop treating that
+//! node as schedulable; claiming health from the node process alone would hide a
+//! broken control-plane path. Kubernetes restarts the failed sidecar container,
+//! while the brain's failure detector keeps placement fail-closed in the interim.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,9 +20,16 @@ use serde_json::Value;
 
 use crate::auth::attach;
 use crate::meta::NodeMeta;
+use crate::metrics::SidecarMetrics;
 
 /// Run the heartbeat loop forever.
-pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: Duration) {
+pub async fn run(
+    node_url: String,
+    brain_url: String,
+    meta: NodeMeta,
+    interval: Duration,
+    metrics: std::sync::Arc<SidecarMetrics>,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -32,20 +40,39 @@ pub async fn run(node_url: String, brain_url: String, meta: NodeMeta, interval: 
     // ignores any heartbeat whose seq is not strictly newer than the last seen,
     // so reordered/duplicated deliveries can't revert newer reported state.
     let seq = AtomicU64::new(now_ms());
+    let node_endpoint = crate::endpoint_label(&node_url);
+    let brain_endpoint = crate::endpoint_label(&brain_url);
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
+        metrics.node_scrape_attempt();
         match scrape_node_status(&client, &node_url).await {
-            Some(status) => {
+            Ok(status) => {
                 let n = seq.fetch_add(1, Ordering::Relaxed);
+                metrics.heartbeat_attempt();
                 if let Err(err) = send_heartbeat(&client, &brain_url, &meta, status, n).await {
-                    tracing::warn!("heartbeat to brain {brain_url} failed: {err}");
+                    metrics.heartbeat_failure();
+                    tracing::warn!(
+                        endpoint = %brain_endpoint,
+                        timeout = err.is_timeout(),
+                        connect = err.is_connect(),
+                        status = err.status().map(|status| status.as_u16()),
+                        "heartbeat to brain failed"
+                    );
+                } else {
+                    metrics.heartbeat_success();
                 }
             }
-            None => {
+            Err(error) => {
+                metrics.node_scrape_failure();
                 // Node unreachable: skip and let the brain's failure detector
                 // notice the missed heartbeats (Healthy → Suspect → Dead).
-                tracing::warn!("local node {node_url} unreachable; skipping heartbeat");
+                tracing::warn!(
+                    endpoint = %node_endpoint,
+                    failure = error.kind(),
+                    status = error.status(),
+                    "local node status unavailable; skipping heartbeat"
+                );
             }
         }
     }
@@ -75,16 +102,64 @@ struct HeartbeatBody {
 
 /// `GET {node_url}/v1/status` → distill the `consensus` block to what the brain
 /// needs (which shards this node hosts, and which it leads).
-async fn scrape_node_status(client: &reqwest::Client, node_url: &str) -> Option<NodeStatusSummary> {
+#[derive(Debug, PartialEq, Eq)]
+enum ScrapeFailure {
+    Timeout,
+    Connect,
+    Status(u16),
+    Decode,
+    Request,
+}
+
+impl ScrapeFailure {
+    fn from_reqwest(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_connect() {
+            Self::Connect
+        } else if let Some(status) = error.status() {
+            Self::Status(status.as_u16())
+        } else if error.is_decode() {
+            Self::Decode
+        } else {
+            Self::Request
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Status(_) => "status",
+            Self::Decode => "decode",
+            Self::Request => "request",
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        match self {
+            Self::Status(status) => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+async fn scrape_node_status(
+    client: &reqwest::Client,
+    node_url: &str,
+) -> Result<NodeStatusSummary, ScrapeFailure> {
     let url = format!("{}/v1/status", node_url.trim_end_matches('/'));
-    let body: Value = attach(client.get(url))
+    let response = attach(client.get(url))
         .send()
         .await
-        .ok()?
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?
+        .error_for_status()
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?;
+    let body: Value = response
         .json()
         .await
-        .ok()?;
-    Some(status_from_value(&body))
+        .map_err(|error| ScrapeFailure::from_reqwest(&error))?;
+    Ok(status_from_value(&body))
 }
 
 fn status_from_value(body: &Value) -> NodeStatusSummary {
@@ -198,7 +273,24 @@ fn sort_dedup(shards: &mut Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    type HeartbeatCapture = Arc<Mutex<Option<(String, Value)>>>;
+
+    async fn mock_node(status: StatusCode, body: &'static str) -> String {
+        let app = Router::new().route("/v1/status", get(move || async move { (status, body) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
 
     #[test]
     fn status_parser_extracts_leading_and_hosted_shards() {
@@ -295,5 +387,247 @@ mod tests {
         let shards = u32_array(&json!([4, -1, "5", 4294967295u64, 4294967296u64, null]));
 
         assert_eq!(shards, vec![4, u32::MAX]);
+    }
+
+    #[tokio::test]
+    async fn scrape_rejects_an_upstream_error_instead_of_reporting_empty_topology() {
+        let base = mock_node(StatusCode::SERVICE_UNAVAILABLE, "try later").await;
+        let error = scrape_node_status(&reqwest::Client::new(), &base)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ScrapeFailure::Status(503));
+    }
+
+    #[tokio::test]
+    async fn scrape_rejects_a_malformed_status_document() {
+        let base = mock_node(StatusCode::OK, "not-json").await;
+        let error = scrape_node_status(&reqwest::Client::new(), &base)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ScrapeFailure::Decode);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_posts_the_monotonic_sequence_and_failure_domain_contract() {
+        let captured: HeartbeatCapture = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route(
+                "/v1/nodes/:node_id/heartbeat",
+                post(
+                    |State(captured): State<HeartbeatCapture>,
+                     Path(node_id): Path<String>,
+                     Json(body): Json<Value>| async move {
+                        *captured.lock().unwrap() = Some((node_id, body));
+                        StatusCode::NO_CONTENT
+                    },
+                ),
+            )
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let meta = NodeMeta {
+            node_id: "fiducia-node-2.gcp".to_string(),
+            address: "http://10.0.0.12:8090".to_string(),
+            region: Some("gcp".to_string()),
+            availability_zone: Some("us-central1-a".to_string()),
+            rack: None,
+            version: Some("v1".to_string()),
+        };
+        send_heartbeat(
+            &reqwest::Client::new(),
+            &format!("http://{address}"),
+            &meta,
+            NodeStatusSummary {
+                leading_shards: vec![3, 7],
+                following_shards: vec![1],
+                hosted_shards: vec![1, 3, 7],
+            },
+            42,
+        )
+        .await
+        .unwrap();
+
+        let (node_id, body) = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(node_id, "fiducia-node-2.gcp");
+        assert_eq!(body["address"], "http://10.0.0.12:8090");
+        assert_eq!(body["failure_domain"], "gcp");
+        assert_eq!(body["hosted_shards"], json!([1, 3, 7]));
+        assert_eq!(body["leading_shards"], json!([3, 7]));
+        assert_eq!(body["seq"], 42);
+    }
+
+    /// When the LOCAL NODE is unreachable, the sidecar must go silent toward
+    /// the brain: node_scrape_failures counts every failed scrape while
+    /// heartbeat_attempts stays 0 and the brain endpoint receives nothing.
+    /// The brain's failure detector must see missed heartbeats - never a
+    /// fabricated heartbeat for a node the sidecar cannot observe.
+    #[tokio::test]
+    async fn unreachable_node_counts_scrape_failures_and_sends_no_heartbeat() {
+        let node_url = mock_node(StatusCode::INTERNAL_SERVER_ERROR, "node down").await;
+
+        let brain_hits: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/:id/heartbeat",
+            post(
+                move |Path(_id): Path<String>, State(hits): State<Arc<Mutex<u32>>>| async move {
+                    *hits.lock().unwrap() += 1;
+                    StatusCode::OK
+                },
+            )
+            .with_state(brain_hits.clone()),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let brain_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let metrics = Arc::new(crate::metrics::SidecarMetrics::default());
+        let handle = tokio::spawn(run(
+            node_url,
+            brain_url,
+            NodeMeta {
+                node_id: "hb-silent".to_string(),
+                address: "http://localhost:8090".to_string(),
+                region: None,
+                availability_zone: None,
+                rack: None,
+                version: None,
+            },
+            std::time::Duration::from_millis(30),
+            metrics.clone(),
+        ));
+
+        let counter = |rendered: &str, name: &str| -> u64 {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("counter {name} missing in:\n{rendered}"))
+        };
+        // Bounded wait for several failed scrape cycles to accumulate.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let rendered = loop {
+            let rendered = metrics.render();
+            if counter(&rendered, "fiducia_sidecar_node_scrape_failures_total") >= 3 {
+                break rendered;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node scrape failures never accumulated; metrics:\n{rendered}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        handle.abort();
+
+        assert_eq!(
+            counter(&rendered, "fiducia_sidecar_heartbeat_attempts_total"),
+            0,
+            "an unobservable node must produce NO heartbeat attempts"
+        );
+        assert_eq!(
+            *brain_hits.lock().unwrap(),
+            0,
+            "the brain endpoint must see silence, not a bogus heartbeat"
+        );
+        // Every scrape cycle was attempted and every one failed.
+        assert!(
+            counter(&rendered, "fiducia_sidecar_node_scrape_attempts_total")
+                >= counter(&rendered, "fiducia_sidecar_node_scrape_failures_total"),
+        );
+    }
+
+    /// A flapping brain must be MEASURABLE, not just logged: the sidecar's own
+    /// counters record every attempt/failure/success, and the loop keeps
+    /// heartbeating through failures without wedging. The mock brain answers
+    /// 500 twice, then 200s forever.
+    #[tokio::test]
+    async fn heartbeat_failures_are_counted_and_the_loop_recovers() {
+        let node_url = mock_node(
+            StatusCode::OK,
+            r#"{ "consensus": { "hosted_shards": [0], "leading_shards": [0], "shards": [ { "shard_id": 0, "role": "leader" } ] } }"#,
+        )
+        .await;
+
+        let hits: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/:id/heartbeat",
+            post(
+                move |Path(_id): Path<String>, State(hits): State<Arc<Mutex<u32>>>| async move {
+                    let mut n = hits.lock().unwrap();
+                    *n += 1;
+                    if *n <= 2 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                },
+            )
+            .with_state(hits.clone()),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let brain_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let metrics = Arc::new(crate::metrics::SidecarMetrics::default());
+        let handle = tokio::spawn(run(
+            node_url,
+            brain_url,
+            NodeMeta {
+                node_id: "hb-test".to_string(),
+                address: "http://localhost:8090".to_string(),
+                region: None,
+                availability_zone: None,
+                rack: None,
+                version: None,
+            },
+            std::time::Duration::from_millis(30),
+            metrics.clone(),
+        ));
+
+        // Wait (bounded) on the sidecar's OWN counters: both 500s recorded as
+        // failures AND at least two successes afterwards — proof the loop
+        // survived the outage and the outage is measurable.
+        let counter = |rendered: &str, name: &str| -> u64 {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("counter {name} missing in:\n{rendered}"))
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let rendered = loop {
+            let rendered = metrics.render();
+            if counter(&rendered, "fiducia_sidecar_heartbeat_failures_total") == 2
+                && counter(&rendered, "fiducia_sidecar_heartbeat_successes_total") >= 2
+            {
+                break rendered;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "heartbeat loop did not recover after brain failures; hits={} metrics:\n{}",
+                *hits.lock().unwrap(),
+                rendered
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        handle.abort();
+
+        // Attempts = successes + failures, allowing one in-flight attempt that
+        // was counted before the loop was aborted mid-request.
+        let attempts = counter(&rendered, "fiducia_sidecar_heartbeat_attempts_total");
+        let successes = counter(&rendered, "fiducia_sidecar_heartbeat_successes_total");
+        assert!(
+            attempts >= successes + 2 && attempts <= successes + 3,
+            "attempts ({attempts}) must be successes ({successes}) + 2 failures (± one in-flight)"
+        );
     }
 }
