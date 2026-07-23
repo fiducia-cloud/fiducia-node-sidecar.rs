@@ -46,7 +46,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    fiducia_telemetry::init(SERVICE);
+    let _telemetry = fiducia_telemetry::init(SERVICE);
 
     // Both the local node and brain control planes fail closed on this trusted-
     // hop secret. Refuse to run a heartbeat sidecar that can authenticate to
