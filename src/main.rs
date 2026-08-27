@@ -116,16 +116,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_max_age,
     );
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8091);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = listen_addr(
+        std::env::var("FIDUCIA_SIDECAR_BIND").ok().as_deref(),
+        std::env::var("PORT").ok().as_deref(),
+        allow_non_loopback_from_env(),
+    )?;
 
     tracing::info!("{SERVICE} listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn allow_non_loopback_from_env() -> bool {
+    matches!(
+        std::env::var("ORES_OTEL_SIDECAR_ALLOW_NON_LOOPBACK")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+/// Loopback by default. `0.0.0.0`/`::` stay rejected; a unicast non-loopback
+/// bind requires `ORES_OTEL_SIDECAR_ALLOW_NON_LOOPBACK=1`.
+fn listen_addr(
+    bind: Option<&str>,
+    port: Option<&str>,
+    allow_non_loopback: bool,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    let raw = match bind.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_string(),
+        None => {
+            let port: u16 = port
+                .and_then(|value| value.parse().ok())
+                .filter(|&value| value > 0)
+                .unwrap_or(8091);
+            format!("127.0.0.1:{port}")
+        }
+    };
+    let addr: SocketAddr = raw
+        .parse()
+        .map_err(|_| std::io::Error::other(format!("invalid sidecar bind {raw:?}")))?;
+    if addr.ip().is_unspecified() || (!addr.ip().is_loopback() && !allow_non_loopback) {
+        return Err(std::io::Error::other(format!(
+            "refusing non-loopback sidecar bind {raw:?}; set ORES_OTEL_SIDECAR_ALLOW_NON_LOOPBACK=1 to override"
+        ))
+        .into());
+    }
+    Ok(addr)
 }
 
 /// Assemble the sidecar's HTTP surface. Shared by `main` and the tests so both
@@ -335,6 +374,34 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod listen_addr_tests {
+    use super::listen_addr;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn default_and_port_bind_loopback() {
+        let addr = listen_addr(None, None, false).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(addr.port(), 8091);
+        let addr = listen_addr(None, Some("9091"), false).unwrap();
+        assert_eq!(addr.port(), 9091);
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn unspecified_is_rejected_even_with_override() {
+        assert!(listen_addr(Some("0.0.0.0:8091"), None, false).is_err());
+        assert!(listen_addr(Some("[::]:8091"), None, true).is_err());
+    }
+
+    #[test]
+    fn public_bind_requires_override() {
+        assert!(listen_addr(Some("1.1.1.1:8091"), None, false).is_err());
+        assert!(listen_addr(Some("1.1.1.1:8091"), None, true).is_ok());
+    }
 }
 
 #[cfg(test)]
