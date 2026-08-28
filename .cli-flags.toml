@@ -29,3 +29,88 @@ long = "allow-non-loopback"
 type = "bool"
 default = false
 help = "Allow a non-loopback unicast bind address."
+
+
+[flags.fiducia-az]
+env = "FIDUCIA_AZ"
+long = "fiducia-az"
+type = "string"
+help = "Runtime environment key FIDUCIA_AZ."
+
+[flags.fiducia-brain-url]
+env = "FIDUCIA_BRAIN_URL"
+long = "fiducia-brain-url"
+type = "string"
+help = "Runtime environment key FIDUCIA_BRAIN_URL."
+
+[flags.fiducia-export-target]
+env = "FIDUCIA_EXPORT_TARGET"
+long = "fiducia-export-target"
+type = "string"
+help = "Runtime environment key FIDUCIA_EXPORT_TARGET."
+
+[flags.fiducia-internal-secret]
+env = "FIDUCIA_INTERNAL_SECRET"
+long = "fiducia-internal-secret"
+type = "string"
+help = "Runtime environment key FIDUCIA_INTERNAL_SECRET."
+
+[flags.fiducia-log-sink]
+env = "FIDUCIA_LOG_SINK"
+long = "fiducia-log-sink"
+type = "string"
+help = "Runtime environment key FIDUCIA_LOG_SINK."
+
+[flags.fiducia-log-source]
+env = "FIDUCIA_LOG_SOURCE"
+long = "fiducia-log-source"
+type = "string"
+help = "Runtime environment key FIDUCIA_LOG_SOURCE."
+
+[flags.fiducia-node-address]
+env = "FIDUCIA_NODE_ADDRESS"
+long = "fiducia-node-address"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_ADDRESS."
+
+[flags.fiducia-node-id]
+env = "FIDUCIA_NODE_ID"
+long = "fiducia-node-id"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_ID."
+
+[flags.fiducia-node-log-source]
+env = "FIDUCIA_NODE_LOG_SOURCE"
+long = "fiducia-node-log-source"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_LOG_SOURCE."
+
+[flags.fiducia-node-url]
+env = "FIDUCIA_NODE_URL"
+long = "fiducia-node-url"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_URL."
+
+[flags.fiducia-node-version]
+env = "FIDUCIA_NODE_VERSION"
+long = "fiducia-node-version"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_VERSION."
+
+[flags.fiducia-rack]
+env = "FIDUCIA_RACK"
+long = "fiducia-rack"
+type = "string"
+help = "Runtime environment key FIDUCIA_RACK."
+
+[flags.fiducia-region]
+env = "FIDUCIA_REGION"
+long = "fiducia-region"
+type = "string"
+help = "Runtime environment key FIDUCIA_REGION."
+
+[flags.fiducia-sidecar-role]
+env = "FIDUCIA_SIDECAR_ROLE"
+long = "fiducia-sidecar-role"
+type = "string"
+help = "Runtime environment key FIDUCIA_SIDECAR_ROLE."

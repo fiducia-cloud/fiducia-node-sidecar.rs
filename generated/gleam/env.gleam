@@ -8,12 +8,54 @@ pub const allow_non_loopback_default = "false"
 pub const bind = "FIDUCIA_SIDECAR_BIND"
 pub const bind_default = "127.0.0.1:9090"
 
+pub const fiducia_az = "FIDUCIA_AZ"
+
+pub const fiducia_brain_url = "FIDUCIA_BRAIN_URL"
+
+pub const fiducia_export_target = "FIDUCIA_EXPORT_TARGET"
+
+pub const fiducia_internal_secret = "FIDUCIA_INTERNAL_SECRET"
+
+pub const fiducia_log_sink = "FIDUCIA_LOG_SINK"
+
+pub const fiducia_log_source = "FIDUCIA_LOG_SOURCE"
+
+pub const fiducia_node_address = "FIDUCIA_NODE_ADDRESS"
+
+pub const fiducia_node_id = "FIDUCIA_NODE_ID"
+
+pub const fiducia_node_log_source = "FIDUCIA_NODE_LOG_SOURCE"
+
+pub const fiducia_node_url = "FIDUCIA_NODE_URL"
+
+pub const fiducia_node_version = "FIDUCIA_NODE_VERSION"
+
+pub const fiducia_rack = "FIDUCIA_RACK"
+
+pub const fiducia_region = "FIDUCIA_REGION"
+
+pub const fiducia_sidecar_role = "FIDUCIA_SIDECAR_ROLE"
+
 pub const port = "PORT"
 
 pub type SidecarEnv {
   SidecarEnv(
     allow_non_loopback: Bool,
     bind: String,
+    fiducia_az: String,
+    fiducia_brain_url: String,
+    fiducia_export_target: String,
+    fiducia_internal_secret: String,
+    fiducia_log_sink: String,
+    fiducia_log_source: String,
+    fiducia_node_address: String,
+    fiducia_node_id: String,
+    fiducia_node_log_source: String,
+    fiducia_node_url: String,
+    fiducia_node_version: String,
+    fiducia_rack: String,
+    fiducia_region: String,
+    fiducia_sidecar_role: String,
     port: String,
   )
 }
