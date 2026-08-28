@@ -1,120 +1,116 @@
-# Non-secret command-line configuration for fiducia-node-sidecar. The shared
-# internal authentication secret remains environment-only.
+# flags-2-env surface for `fiducia-node-sidecar`
+[identity]
+service = "fiducia-node-sidecar"
+type_name = "SidecarEnv"
+
 [help]
-url = "https://github.com/fiducia-cloud/fiducia-node-sidecar.rs"
-columns = ["options", "env", "type", "description"]
+url = "https://github.com/fiducia-node-sidecar"
+columns = ["options", "env", "type", "default", "description"]
 
 [parse]
 allow_unknown = false
 
-[env]
-ignore = ["FIDUCIA_INTERNAL_SECRET"]
+[flags.bind]
+env = "FIDUCIA_SIDECAR_BIND"
+long = "bind"
+type = "string"
+default = "127.0.0.1:9090"
+help = "HTTP listen address for /healthz /readyz /metrics."
 
 [flags.port]
 env = "PORT"
-aliases = ["port"]
-short = "p"
-type = "integer"
-help = "HTTP listen port."
-
-[flags.node-id]
-env = "FIDUCIA_NODE_ID"
-aliases = ["node-id"]
+long = "port"
 type = "string"
-help = "Stable data-plane node identifier."
+help = "Optional listen port override."
 
-[flags.node-url]
-env = "FIDUCIA_NODE_URL"
-aliases = ["node-url"]
-type = "string"
-help = "Local data-plane node base URL."
+[flags.allow-non-loopback]
+env = "ORES_OTEL_SIDECAR_ALLOW_NON_LOOPBACK"
+long = "allow-non-loopback"
+type = "bool"
+default = false
+help = "Allow a non-loopback unicast bind address."
 
-[flags.brain-url]
-env = "FIDUCIA_BRAIN_URL"
-aliases = ["brain-url"]
-type = "string"
-help = "Brain service base URL."
 
-[flags.export-target]
-env = "FIDUCIA_EXPORT_TARGET"
-aliases = ["export-target"]
-type = "string"
-help = "Which plane /metrics exports: node or brain."
-
-[flags.sidecar-role]
-env = "FIDUCIA_SIDECAR_ROLE"
-aliases = ["sidecar-role"]
-type = "string"
-help = "full (node bridge + exporter) or exporter (metrics only). Forced to exporter when export-target=brain."
-
-[flags.observe-timeout-ms]
-env = "FIDUCIA_OBSERVE_TIMEOUT_MS"
-aliases = ["observe-timeout-ms"]
-type = "integer"
-help = "Per-fetch timeout for the metrics exporter in milliseconds."
-
-[flags.heartbeat-ms]
-env = "FIDUCIA_HEARTBEAT_MS"
-aliases = ["heartbeat-ms"]
-type = "integer"
-help = "Heartbeat interval in milliseconds."
-
-[flags.node-address]
-env = "FIDUCIA_NODE_ADDRESS"
-aliases = ["node-address"]
-type = "string"
-help = "Advertised node address."
-
-[flags.region]
-env = "FIDUCIA_REGION"
-aliases = ["region"]
-type = "string"
-help = "Cloud region."
-
-[flags.az]
+[flags.fiducia-az]
 env = "FIDUCIA_AZ"
-aliases = ["az"]
+long = "fiducia-az"
 type = "string"
-help = "Availability zone."
+help = "Runtime environment key FIDUCIA_AZ."
 
-[flags.rack]
-env = "FIDUCIA_RACK"
-aliases = ["rack"]
+[flags.fiducia-brain-url]
+env = "FIDUCIA_BRAIN_URL"
+long = "fiducia-brain-url"
 type = "string"
-help = "Rack or failure-domain label."
+help = "Runtime environment key FIDUCIA_BRAIN_URL."
 
-[flags.node-version]
-env = "FIDUCIA_NODE_VERSION"
-aliases = ["node-version"]
+[flags.fiducia-export-target]
+env = "FIDUCIA_EXPORT_TARGET"
+long = "fiducia-export-target"
 type = "string"
-help = "Advertised node software version."
+help = "Runtime environment key FIDUCIA_EXPORT_TARGET."
 
-[flags.log-source]
-env = "FIDUCIA_LOG_SOURCE"
-aliases = ["log-source"]
+[flags.fiducia-internal-secret]
+env = "FIDUCIA_INTERNAL_SECRET"
+long = "fiducia-internal-secret"
 type = "string"
-help = "Local workload log source path. Works for node and brain profiles."
+help = "Runtime environment key FIDUCIA_INTERNAL_SECRET."
 
-[flags.node-log-source]
-env = "FIDUCIA_NODE_LOG_SOURCE"
-aliases = ["node-log-source"]
-type = "string"
-help = "Deprecated node-only alias for FIDUCIA_LOG_SOURCE."
-
-[flags.log-sink]
+[flags.fiducia-log-sink]
 env = "FIDUCIA_LOG_SINK"
-aliases = ["log-sink"]
+long = "fiducia-log-sink"
 type = "string"
-help = "Remote log sink URL."
+help = "Runtime environment key FIDUCIA_LOG_SINK."
 
-[flags.log-ship-interval-ms]
-env = "FIDUCIA_LOG_SHIP_INTERVAL_MS"
-aliases = ["log-ship-interval-ms"]
-type = "integer"
-help = "Log shipping interval in milliseconds."
-
-[flags.log]
-env = "RUST_LOG"
-aliases = ["log"]
+[flags.fiducia-log-source]
+env = "FIDUCIA_LOG_SOURCE"
+long = "fiducia-log-source"
 type = "string"
-help = "Rust tracing filter."
+help = "Runtime environment key FIDUCIA_LOG_SOURCE."
+
+[flags.fiducia-node-address]
+env = "FIDUCIA_NODE_ADDRESS"
+long = "fiducia-node-address"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_ADDRESS."
+
+[flags.fiducia-node-id]
+env = "FIDUCIA_NODE_ID"
+long = "fiducia-node-id"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_ID."
+
+[flags.fiducia-node-log-source]
+env = "FIDUCIA_NODE_LOG_SOURCE"
+long = "fiducia-node-log-source"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_LOG_SOURCE."
+
+[flags.fiducia-node-url]
+env = "FIDUCIA_NODE_URL"
+long = "fiducia-node-url"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_URL."
+
+[flags.fiducia-node-version]
+env = "FIDUCIA_NODE_VERSION"
+long = "fiducia-node-version"
+type = "string"
+help = "Runtime environment key FIDUCIA_NODE_VERSION."
+
+[flags.fiducia-rack]
+env = "FIDUCIA_RACK"
+long = "fiducia-rack"
+type = "string"
+help = "Runtime environment key FIDUCIA_RACK."
+
+[flags.fiducia-region]
+env = "FIDUCIA_REGION"
+long = "fiducia-region"
+type = "string"
+help = "Runtime environment key FIDUCIA_REGION."
+
+[flags.fiducia-sidecar-role]
+env = "FIDUCIA_SIDECAR_ROLE"
+long = "fiducia-sidecar-role"
+type = "string"
+help = "Runtime environment key FIDUCIA_SIDECAR_ROLE."

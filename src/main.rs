@@ -15,6 +15,9 @@
 //! ships configured log files and renders `/metrics` from the node/brain observe
 //! APIs. Both outbound planes are authenticated by the shared `auth` module.
 
+#[path = "../generated/rust/env.rs"]
+mod env;
+
 mod auth;
 mod collector;
 mod exporter;
@@ -37,7 +40,7 @@ use exporter::Exporter;
 use meta::NodeMeta;
 use metrics::SidecarMetrics;
 
-const SERVICE: &str = "fiducia-node-sidecar";
+const SERVICE: &str = env::SERVICE;
 
 /// Bound request handling time (the sidecar's endpoints are all fast/local).
 const REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -117,8 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let addr = listen_addr(
-        std::env::var("FIDUCIA_SIDECAR_BIND").ok().as_deref(),
-        std::env::var("PORT").ok().as_deref(),
+        std::env::var(env::BIND).ok().as_deref(),
+        std::env::var(env::PORT).ok().as_deref(),
         allow_non_loopback_from_env(),
     )?;
 
@@ -130,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn allow_non_loopback_from_env() -> bool {
     matches!(
-        std::env::var("ORES_OTEL_SIDECAR_ALLOW_NON_LOOPBACK")
+        std::env::var(env::ALLOW_NON_LOOPBACK)
             .ok()
             .as_deref()
             .map(str::trim),
