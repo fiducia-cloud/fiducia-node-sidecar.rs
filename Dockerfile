@@ -26,4 +26,8 @@ USER 65532:65532
 #     just env-docker-run prod <image>        # decrypts env/enc/prod.env.enc
 #                                             # and passes --env-file, no plaintext on disk
 # or render a platform secret from the same ciphertext. See env/README.md.
+# ores-otel: in-process OTLP to the cluster collector. The *-sidecar.rs image is a separate loopback helper on 127.0.0.1:9090 — do not EXPOSE 4317/4318 or 9090.
+ENV OTEL_SERVICE_NAME=fiducia-node-sidecar \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://dd-otel-collector.observability.svc.cluster.local:4318 \
+    RUST_LOG=info
 ENTRYPOINT ["/usr/local/bin/fiducia-node-sidecar"]
