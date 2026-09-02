@@ -26,4 +26,9 @@ USER 65532:65532
 #     just env-docker-run prod <image>        # decrypts env/enc/prod.env.enc
 #                                             # and passes --env-file, no plaintext on disk
 # or render a platform secret from the same ciphertext. See env/README.md.
+#
+# Runtime telemetry is intentionally not baked into the image. The deployment
+# must inject OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT, and RUST_LOG from
+# its reviewed environment/configuration source. In particular, cluster DNS
+# names belong to the deployment, not to a portable build artifact.
 ENTRYPOINT ["/usr/local/bin/fiducia-node-sidecar"]
