@@ -32,11 +32,12 @@ fn secret(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn node_status(
-    State(observations): State<Observations>,
-    headers: HeaderMap,
-) -> Json<Value> {
-    observations.node_auth.lock().unwrap().push(secret(&headers));
+async fn node_status(State(observations): State<Observations>, headers: HeaderMap) -> Json<Value> {
+    observations
+        .node_auth
+        .lock()
+        .unwrap()
+        .push(secret(&headers));
     Json(json!({
         "consensus": {
             "hosted_shards": [3, 1, 1, 2],
@@ -123,7 +124,10 @@ async fn real_sidecar_authenticates_both_hops_and_retries_brain_without_regressi
     .await;
     let (brain_url, brain_server) = serve(
         Router::new()
-            .route("/v1/nodes/node-sidecar-e2e/heartbeat", post(brain_heartbeat))
+            .route(
+                "/v1/nodes/node-sidecar-e2e/heartbeat",
+                post(brain_heartbeat),
+            )
             .with_state(observations.clone()),
     )
     .await;
@@ -150,7 +154,9 @@ async fn real_sidecar_authenticates_both_hops_and_retries_brain_without_regressi
     let brain_post = observations.brain_post.lock().unwrap().clone();
     assert!(node_auth.len() >= 2);
     assert!(brain_post.len() >= 2);
-    assert!(node_auth.iter().all(|value| value.as_deref() == Some(SECRET)));
+    assert!(node_auth
+        .iter()
+        .all(|value| value.as_deref() == Some(SECRET)));
 
     let mut last_seq = 0;
     for (proof, body) in brain_post {
@@ -160,7 +166,10 @@ async fn real_sidecar_authenticates_both_hops_and_retries_brain_without_regressi
         assert_eq!(body["hosted_shards"], json!([1, 2, 3]));
         assert_eq!(body["leading_shards"], json!([1, 3]));
         let sequence = body["seq"].as_u64().expect("monotonic sequence");
-        assert!(sequence > last_seq, "retries must advance heartbeat sequence");
+        assert!(
+            sequence > last_seq,
+            "retries must advance heartbeat sequence"
+        );
         last_seq = sequence;
     }
 
@@ -178,7 +187,6 @@ async fn real_sidecar_authenticates_both_hops_and_retries_brain_without_regressi
     node_server.abort();
     brain_server.abort();
 }
-
 
 async fn brain_reject_all_heartbeats(
     State(observations): State<Observations>,
@@ -236,7 +244,11 @@ async fn real_sidecar_never_reports_ready_when_brain_rejects_all_heartbeats() {
         .send()
         .await
         .expect("sidecar health");
-    assert_eq!(health.status(), StatusCode::OK, "liveness should not depend on brain");
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "liveness should not depend on brain"
+    );
 
     let ready = client
         .get(format!("{sidecar_url}/readyz"))
@@ -262,10 +274,14 @@ async fn real_sidecar_never_reports_ready_when_brain_rejects_all_heartbeats() {
         .expect("brain observations")
         .clone();
     assert!(node_auth.len() >= 3);
-    assert!(node_auth.iter().all(|header| header.as_deref() == Some(SECRET)));
+    assert!(node_auth
+        .iter()
+        .all(|header| header.as_deref() == Some(SECRET)));
     assert!(brain_post.len() >= 3);
     assert!(
-        brain_post.iter().all(|(proof, _)| proof.as_deref() == Some(SECRET)),
+        brain_post
+            .iter()
+            .all(|(proof, _)| proof.as_deref() == Some(SECRET)),
         "all failed heartbeats must still use the trusted-hop secret"
     );
 
@@ -284,7 +300,10 @@ async fn exporter_only_sidecar_is_ready_without_registering_phantom_nodes() {
     .await;
     let (brain_url, brain_server) = serve(
         Router::new()
-            .route("/v1/nodes/node-sidecar-e2e/heartbeat", post(brain_heartbeat))
+            .route(
+                "/v1/nodes/node-sidecar-e2e/heartbeat",
+                post(brain_heartbeat),
+            )
             .with_state(observations.clone()),
     )
     .await;
