@@ -32,8 +32,11 @@ pub async fn run(
 ) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
+        // These requests carry a trusted-hop secret. A node or brain-supplied
+        // Location is never an authority for that credential.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_default();
+        .expect("sidecar's bounded no-redirect HTTP client must build");
     // Monotonic heartbeat sequence. Seeded from the wall clock at startup so a
     // sidecar restart resumes ABOVE its previous numbers (a restart can't be
     // mistaken for a stale heartbeat), then incremented once per send. The brain
@@ -630,4 +633,111 @@ mod tests {
             "attempts ({attempts}) must be successes ({successes}) + 2 failures (± one in-flight)"
         );
     }
+
+    /// A malicious/stale node can return a 307. The internal-auth header and
+    /// the scrape request must NEVER follow that Location to a different hop.
+    #[tokio::test]
+    async fn node_redirect_is_not_followed_and_never_becomes_a_brain_heartbeat() {
+        let attacker_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attacker = Router::new()
+            .route(
+                "/steal",
+                get(
+                    |State(hits): State<Arc<std::sync::atomic::AtomicUsize>>| async move {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Json(json!({"consensus": {"leading_shards": [0], "hosted_shards": [0]}}))
+                    },
+                ),
+            )
+            .with_state(attacker_hits.clone());
+        let attacker_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let location = format!("http://{}/steal", attacker_listener.local_addr().unwrap());
+        let attacker_handle = tokio::spawn(async move {
+            axum::serve(attacker_listener, attacker).await.unwrap();
+        });
+
+        let node = Router::new().route(
+            "/v1/status",
+            get(move || {
+                let location = location.clone();
+                async move { (StatusCode::TEMPORARY_REDIRECT, [("location", location)]) }
+            }),
+        );
+        let node_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let node_url = format!("http://{}", node_listener.local_addr().unwrap());
+        let node_handle = tokio::spawn(async move {
+            axum::serve(node_listener, node).await.unwrap();
+        });
+
+        let brain_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let brain = Router::new()
+            .route(
+                "/v1/nodes/:id/heartbeat",
+                post(
+                    |State(hits): State<Arc<std::sync::atomic::AtomicUsize>>| async move {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    },
+                ),
+            )
+            .with_state(brain_hits.clone());
+        let brain_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let brain_url = format!("http://{}", brain_listener.local_addr().unwrap());
+        let brain_handle = tokio::spawn(async move {
+            axum::serve(brain_listener, brain).await.unwrap();
+        });
+
+        let metrics = Arc::new(crate::metrics::SidecarMetrics::default());
+        let sidecar = tokio::spawn(run(
+            node_url,
+            brain_url,
+            NodeMeta {
+                node_id: "node-redirect-rejected".into(),
+                address: "http://127.0.0.1:8090".into(),
+                region: Some("region-a".into()),
+                availability_zone: None,
+                rack: None,
+                version: None,
+            },
+            Duration::from_millis(30),
+            metrics.clone(),
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = metrics.render();
+            let failures = text
+                .lines()
+                .find(|line| line.starts_with("fiducia_sidecar_node_scrape_failures_total"))
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            if failures >= 2 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "redirect not rejected: {text}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        sidecar.abort();
+        node_handle.abort();
+        brain_handle.abort();
+        attacker_handle.abort();
+        assert_eq!(
+            attacker_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the sidecar must never send a trusted-hop request to the Location"
+        );
+        assert_eq!(
+            brain_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "unobserved nodes must never get a synthesized healthy heartbeat"
+        );
+    }
+
 }
