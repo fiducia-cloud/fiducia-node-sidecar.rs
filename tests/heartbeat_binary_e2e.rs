@@ -19,10 +19,12 @@ use tokio::task::JoinHandle;
 
 const SECRET: &str = "local-sidecar-to-brain-test-internal-proof";
 
+type BrainPosts = Vec<(Option<String>, Value)>;
+
 #[derive(Clone, Default)]
 struct Observations {
     node_auth: Arc<Mutex<Vec<Option<String>>>>,
-    brain_post: Arc<Mutex<Vec<(Option<String>, Value)>>>,
+    brain_post: Arc<Mutex<BrainPosts>>,
 }
 
 fn secret(headers: &HeaderMap) -> Option<String> {
