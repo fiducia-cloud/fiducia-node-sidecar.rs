@@ -650,9 +650,7 @@ mod tests {
                 ),
             )
             .with_state(attacker_hits.clone());
-        let attacker_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let attacker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let location = format!("http://{}/steal", attacker_listener.local_addr().unwrap());
         let attacker_handle = tokio::spawn(async move {
             axum::serve(attacker_listener, attacker).await.unwrap();
@@ -665,9 +663,7 @@ mod tests {
                 async move { (StatusCode::TEMPORARY_REDIRECT, [("location", location)]) }
             }),
         );
-        let node_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let node_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let node_url = format!("http://{}", node_listener.local_addr().unwrap());
         let node_handle = tokio::spawn(async move {
             axum::serve(node_listener, node).await.unwrap();
@@ -685,9 +681,7 @@ mod tests {
                 ),
             )
             .with_state(brain_hits.clone());
-        let brain_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let brain_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let brain_url = format!("http://{}", brain_listener.local_addr().unwrap());
         let brain_handle = tokio::spawn(async move {
             axum::serve(brain_listener, brain).await.unwrap();
@@ -720,7 +714,10 @@ mod tests {
             if failures >= 2 {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "redirect not rejected: {text}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "redirect not rejected: {text}"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
@@ -739,5 +736,4 @@ mod tests {
             "unobserved nodes must never get a synthesized healthy heartbeat"
         );
     }
-
 }
