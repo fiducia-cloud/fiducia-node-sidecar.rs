@@ -74,20 +74,33 @@ async fn exporter_parallel_get_head_and_malformed_public_methods_remain_isolated
                 reqwest::Method::GET
             };
             let response = client
-                .request(method.clone(), format!("{base}{path}?untrusted=synthetic-client"))
+                .request(
+                    method.clone(),
+                    format!("{base}{path}?untrusted=synthetic-client"),
+                )
                 .header("Origin", "https://untrusted.invalid")
                 .header("Forwarded", "for=192.0.2.1;host=untrusted.invalid")
                 .header("Authorization", "Bearer synthetic-client-no-authority")
                 .send()
                 .await
                 .expect("live sidecar HTTP request");
-            assert_eq!(response.status(), reqwest::StatusCode::OK, "{method} {path}");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::OK,
+                "{method} {path}"
+            );
             assert!(response.headers().get("location").is_none());
-            assert!(response.headers().get("access-control-allow-origin").is_none());
+            assert!(response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none());
 
             let text = response.text().await.expect("bounded response");
             if method == reqwest::Method::HEAD {
-                assert!(text.is_empty(), "HEAD {path} must not return representation bytes");
+                assert!(
+                    text.is_empty(),
+                    "HEAD {path} must not return representation bytes"
+                );
             } else {
                 assert!(!text.contains("untrusted.invalid"));
                 assert!(!text.contains("synthetic-client-no-authority"));
@@ -121,7 +134,11 @@ async fn exporter_parallel_get_head_and_malformed_public_methods_remain_isolated
         assert_eq!(response.status().as_u16(), expected);
     }
 
-    let final_response = client.get(format!("{base}/meta")).send().await.expect("final metadata");
+    let final_response = client
+        .get(format!("{base}/meta"))
+        .send()
+        .await
+        .expect("final metadata");
     assert_eq!(final_response.status(), reqwest::StatusCode::OK);
     let meta: Value = final_response.json().await.expect("final metadata JSON");
     assert_eq!(meta["node_id"], "readonly-e2e-node");
