@@ -143,3 +143,90 @@ async fn public_client_headers_cannot_modify_exporter_label_authority() {
     assert!(!attacked.contains("synthetic-client-state"));
     assert!(!attacked.contains("untrusted.invalid"));
 }
+
+
+// Wave50: these cases invoke the production sidecar binary, not a mocked router.
+#[tokio::test]
+async fn wave50_head_metrics_is_bodyless_and_does_not_leak_private_labels() {
+    let (base, _sidecar) = spawn();
+    let client = reqwest::Client::new();
+    wait_ready(&client, &base).await;
+    let reply = client.head(format!("{base}/metrics")).send().await.unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK);
+    assert!(reply.bytes().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn wave50_mutating_methods_cannot_modify_public_metadata() {
+    let (base, _sidecar) = spawn();
+    let client = reqwest::Client::new();
+    wait_ready(&client, &base).await;
+    for method in [
+        reqwest::Method::POST,
+        reqwest::Method::PUT,
+        reqwest::Method::DELETE,
+        reqwest::Method::PATCH,
+    ] {
+        let denied = client.request(method, format!("{base}/meta"))
+            .body("synthetic-mutating-payload")
+            .send().await.unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+    }
+    let identity: serde_json::Value = client.get(format!("{base}/meta"))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(identity["node_id"], NODE_ID);
+    assert_eq!(identity["region"], REGION);
+}
+
+#[tokio::test]
+async fn wave50_unknown_public_routes_do_not_disclose_exporter_credentials() {
+    let (base, _sidecar) = spawn();
+    let client = reqwest::Client::new();
+    wait_ready(&client, &base).await;
+    for path in ["/internal", "/debug/vars", "/admin/secrets", "/v1/nodes"] {
+        let denied = client.get(format!("{base}{path}")).send().await.unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND);
+        let body = denied.text().await.unwrap();
+        assert!(!body.contains("synthetic-label-wire-private-token"));
+        assert!(!body.contains(NODE_ID));
+    }
+}
+
+#[tokio::test]
+async fn wave50_parallel_meta_clients_receive_exact_per_process_identity() {
+    let (base, _sidecar) = spawn();
+    let client = reqwest::Client::new();
+    wait_ready(&client, &base).await;
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let url = format!("{base}/meta");
+        let client = client.clone();
+        readers.push(tokio::spawn(async move {
+            let response = client.get(url).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            response.json::<serde_json::Value>().await.unwrap()
+        }));
+    }
+    for reader in readers {
+        let identity = reader.await.unwrap();
+        assert_eq!(identity["node_id"], NODE_ID);
+        assert_eq!(identity["region"], REGION);
+    }
+}
+
+#[tokio::test]
+async fn wave50_forwarded_authority_cannot_change_exporter_readiness() {
+    let (base, _sidecar) = spawn();
+    let client = reqwest::Client::new();
+    wait_ready(&client, &base).await;
+    let response = client.get(format!("{base}/readyz?role=full&node_id=attacker"))
+        .header("Forwarded", "for=127.0.0.1;host=evil.invalid")
+        .header("X-Forwarded-Proto", "https")
+        .header("Cookie", "role=full;tenant=attacker")
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let raw = response.text().await.unwrap();
+    assert!(!raw.contains("evil.invalid"));
+    assert!(!raw.contains("attacker"));
+    assert!(!raw.contains("synthetic-label-wire-private-token"));
+}
