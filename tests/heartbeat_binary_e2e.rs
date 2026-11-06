@@ -350,7 +350,6 @@ async fn exporter_only_sidecar_is_ready_without_registering_phantom_nodes() {
     brain_server.abort();
 }
 
-
 #[tokio::test]
 async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_recovery() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -384,10 +383,14 @@ async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_rec
                 )
             }
         }),
-    )).await;
+    ))
+    .await;
     let (brain_url, brain_server) = serve(
         Router::new()
-            .route("/v1/nodes/node-sidecar-e2e/heartbeat", post(brain_heartbeat))
+            .route(
+                "/v1/nodes/node-sidecar-e2e/heartbeat",
+                post(brain_heartbeat),
+            )
             .with_state(observations.clone()),
     )
     .await;
@@ -406,11 +409,20 @@ async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_rec
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.expect("sidecar must poll the unreachable node");
+    })
+    .await
+    .expect("sidecar must poll the unreachable node");
     assert!(observations.brain_post.lock().unwrap().is_empty());
-    let unready = client.get(format!("{sidecar_url}/readyz")).send().await.expect("readiness");
+    let unready = client
+        .get(format!("{sidecar_url}/readyz"))
+        .send()
+        .await
+        .expect("readiness");
     assert_eq!(unready.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(unready.json::<Value>().await.expect("readiness JSON")["reason"], "no_successful_heartbeat");
+    assert_eq!(
+        unready.json::<Value>().await.expect("readiness JSON")["reason"],
+        "no_successful_heartbeat"
+    );
 
     // Once the node becomes observable, the real process must resume the
     // node -> sidecar -> brain chain and keep the trusted-hop proof on both hops.
@@ -425,20 +437,33 @@ async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_rec
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.expect("sidecar must recover after node becomes healthy");
+    })
+    .await
+    .expect("sidecar must recover after node becomes healthy");
 
     let heartbeats = observations.brain_post.lock().unwrap().clone();
-    assert!(heartbeats.len() >= 2, "control-plane retries must be observed");
+    assert!(
+        heartbeats.len() >= 2,
+        "control-plane retries must be observed"
+    );
     let mut last_seq = 0;
     for (header, heartbeat) in heartbeats {
         assert_eq!(header.as_deref(), Some(SECRET));
         assert_eq!(heartbeat["hosted_shards"], json!([7, 9]));
         assert_eq!(heartbeat["leading_shards"], json!([9]));
         let seq = heartbeat["seq"].as_u64().expect("sequence");
-        assert!(seq > last_seq, "sidecar must advance sequence across retries");
+        assert!(
+            seq > last_seq,
+            "sidecar must advance sequence across retries"
+        );
         last_seq = seq;
     }
-    assert!(observations.node_auth.lock().unwrap().iter().all(|value| value.as_deref() == Some(SECRET)));
+    assert!(observations
+        .node_auth
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|value| value.as_deref() == Some(SECRET)));
 
     // A second outage must stop NEW heartbeats. Allow one already-in-flight
     // scrape to finish, then require multiple rejected scrapes and a quiet window.
@@ -451,12 +476,25 @@ async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_rec
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.expect("the node must be polled during the second outage");
+    })
+    .await
+    .expect("the node must be polled during the second outage");
     let delivered = observations.brain_post.lock().unwrap().len();
     tokio::time::sleep(Duration::from_millis(160)).await;
-    assert_eq!(observations.brain_post.lock().unwrap().len(), delivered,
-        "unobservable node must not generate additional brain heartbeats");
-    assert_eq!(client.get(format!("{sidecar_url}/healthz")).send().await.expect("liveness").status(), StatusCode::OK);
+    assert_eq!(
+        observations.brain_post.lock().unwrap().len(),
+        delivered,
+        "unobservable node must not generate additional brain heartbeats"
+    );
+    assert_eq!(
+        client
+            .get(format!("{sidecar_url}/healthz"))
+            .send()
+            .await
+            .expect("liveness")
+            .status(),
+        StatusCode::OK
+    );
 
     node_server.abort();
     brain_server.abort();
