@@ -349,3 +349,115 @@ async fn exporter_only_sidecar_is_ready_without_registering_phantom_nodes() {
     node_server.abort();
     brain_server.abort();
 }
+
+
+#[tokio::test]
+async fn real_sidecar_stops_brain_delivery_during_node_outage_and_resumes_on_recovery() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let observations = Observations::default();
+    let node_healthy = Arc::new(AtomicBool::new(false));
+    let observed = observations.clone();
+    let gate = Arc::clone(&node_healthy);
+    let (node_url, node_server) = serve(Router::new().route(
+        "/v1/status",
+        get(move |headers: HeaderMap| {
+            let observed = observed.clone();
+            let gate = Arc::clone(&gate);
+            async move {
+                observed.node_auth.lock().unwrap().push(secret(&headers));
+                if !gate.load(Ordering::SeqCst) {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error": "node-unavailable"})),
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "consensus": {
+                            "hosted_shards": [9, 7, 9],
+                            "leading_shards": [9],
+                            "following_shards": [7]
+                        }
+                    })),
+                )
+            }
+        }),
+    )).await;
+    let (brain_url, brain_server) = serve(
+        Router::new()
+            .route("/v1/nodes/node-sidecar-e2e/heartbeat", post(brain_heartbeat))
+            .with_state(observations.clone()),
+    )
+    .await;
+    let (sidecar_url, _sidecar) = start_sidecar(&node_url, &brain_url);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+
+    // Three consecutive rejected node-status scrapes must cause no traffic
+    // to the brain and must not make the sidecar eligible for placement.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if observations.node_auth.lock().unwrap().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("sidecar must poll the unreachable node");
+    assert!(observations.brain_post.lock().unwrap().is_empty());
+    let unready = client.get(format!("{sidecar_url}/readyz")).send().await.expect("readiness");
+    assert_eq!(unready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(unready.json::<Value>().await.expect("readiness JSON")["reason"], "no_successful_heartbeat");
+
+    // Once the node becomes observable, the real process must resume the
+    // node -> sidecar -> brain chain and keep the trusted-hop proof on both hops.
+    node_healthy.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if observations.brain_post.lock().unwrap().len() >= 2 {
+                let ready = client.get(format!("{sidecar_url}/readyz")).send().await;
+                if ready.map(|r| r.status() == StatusCode::OK).unwrap_or(false) {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("sidecar must recover after node becomes healthy");
+
+    let heartbeats = observations.brain_post.lock().unwrap().clone();
+    assert!(heartbeats.len() >= 2, "control-plane retries must be observed");
+    let mut last_seq = 0;
+    for (header, heartbeat) in heartbeats {
+        assert_eq!(header.as_deref(), Some(SECRET));
+        assert_eq!(heartbeat["hosted_shards"], json!([7, 9]));
+        assert_eq!(heartbeat["leading_shards"], json!([9]));
+        let seq = heartbeat["seq"].as_u64().expect("sequence");
+        assert!(seq > last_seq, "sidecar must advance sequence across retries");
+        last_seq = seq;
+    }
+    assert!(observations.node_auth.lock().unwrap().iter().all(|value| value.as_deref() == Some(SECRET)));
+
+    // A second outage must stop NEW heartbeats. Allow one already-in-flight
+    // scrape to finish, then require multiple rejected scrapes and a quiet window.
+    node_healthy.store(false, Ordering::SeqCst);
+    let prior_scrapes = observations.node_auth.lock().unwrap().len();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if observations.node_auth.lock().unwrap().len() >= prior_scrapes + 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("the node must be polled during the second outage");
+    let delivered = observations.brain_post.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(160)).await;
+    assert_eq!(observations.brain_post.lock().unwrap().len(), delivered,
+        "unobservable node must not generate additional brain heartbeats");
+    assert_eq!(client.get(format!("{sidecar_url}/healthz")).send().await.expect("liveness").status(), StatusCode::OK);
+
+    node_server.abort();
+    brain_server.abort();
+}
