@@ -19,7 +19,10 @@ fn spawn_exporter(target: &str, node_id: &str) -> (String, Sidecar) {
     let port = reserve.local_addr().expect("bind").port();
     drop(reserve);
     let child = Command::new(env!("CARGO_BIN_EXE_fiducia-node-sidecar"))
-        .env("FIDUCIA_INTERNAL_SECRET", "synthetic-metrics-boundary-proof")
+        .env(
+            "FIDUCIA_INTERNAL_SECRET",
+            "synthetic-metrics-boundary-proof",
+        )
         .env("FIDUCIA_EXPORT_TARGET", target)
         .env("FIDUCIA_SIDECAR_ROLE", "exporter")
         .env("FIDUCIA_NODE_ID", node_id)
