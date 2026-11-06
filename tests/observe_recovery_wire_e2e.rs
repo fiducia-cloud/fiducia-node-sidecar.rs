@@ -212,6 +212,20 @@ async fn recovered_node_handles_concurrent_scrapes_without_leaking_credentials()
         .timeout(Duration::from_secs(4))
         .build()
         .expect("HTTP client");
+    // A spawned process is not yet a listening socket. Synchronize on its
+    // real readiness endpoint rather than relying on startup scheduling.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Ok(response) = client.get(format!("{base}/readyz")).send().await {
+                if response.status() == StatusCode::OK {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("concurrent scrape target must be listening");
     let mut tasks = Vec::new();
     for _ in 0..12 {
         let c = client.clone();
