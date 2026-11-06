@@ -29,7 +29,10 @@ fn spawn() -> (String, Sidecar) {
         .env("FIDUCIA_REGION", REGION)
         .env("FIDUCIA_NODE_URL", "http://127.0.0.1:1")
         .env("FIDUCIA_BRAIN_URL", "http://127.0.0.1:1")
-        .env("FIDUCIA_INTERNAL_SECRET", "synthetic-label-wire-private-token")
+        .env(
+            "FIDUCIA_INTERNAL_SECRET",
+            "synthetic-label-wire-private-token",
+        )
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env_remove("FIDUCIA_LOG_SOURCE")
         .env_remove("FIDUCIA_LOG_SINK")
@@ -65,7 +68,11 @@ async fn escaped_identity_and_region_cannot_inject_prometheus_metric_samples() {
     wait_ready(&client, &base).await;
 
     for _ in 0..4 {
-        let response = client.get(format!("{base}/metrics")).send().await.expect("scrape");
+        let response = client
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("scrape");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let wire = response.text().await.expect("Prometheus body");
         let samples: Vec<&str> = wire
@@ -78,8 +85,12 @@ async fn escaped_identity_and_region_cannot_inject_prometheus_metric_samples() {
         assert!(sample.contains(r#"region="us\"\\\n# TYPE fake counter""#));
         assert!(sample.contains(r#"target="node""#));
         assert!(sample.ends_with(" 0"));
-        assert!(!wire.lines().any(|line| line.starts_with("fiducia_forged_metric")));
-        assert!(!wire.lines().any(|line| line.starts_with("# TYPE fake counter")));
+        assert!(!wire
+            .lines()
+            .any(|line| line.starts_with("fiducia_forged_metric")));
+        assert!(!wire
+            .lines()
+            .any(|line| line.starts_with("# TYPE fake counter")));
         assert!(!wire.contains("synthetic-label-wire-private-token"));
     }
 
@@ -123,7 +134,10 @@ async fn public_client_headers_cannot_modify_exporter_label_authority() {
         .text()
         .await
         .expect("hostile response");
-    assert_eq!(attacked, baseline, "client metadata must not affect exported labels");
+    assert_eq!(
+        attacked, baseline,
+        "client metadata must not affect exported labels"
+    );
     assert!(!attacked.contains("attacker-node"));
     assert!(!attacked.contains("attacker-region"));
     assert!(!attacked.contains("synthetic-client-state"));
