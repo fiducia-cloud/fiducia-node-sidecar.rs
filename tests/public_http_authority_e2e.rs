@@ -22,7 +22,10 @@ fn start_exporter() -> (String, SidecarChild) {
     let port = reserved.local_addr().expect("bound addr").port();
     drop(reserved);
     let child = Command::new(env!("CARGO_BIN_EXE_fiducia-node-sidecar"))
-        .env("FIDUCIA_INTERNAL_SECRET", "synthetic-exporter-local-only-proof")
+        .env(
+            "FIDUCIA_INTERNAL_SECRET",
+            "synthetic-exporter-local-only-proof",
+        )
         .env("FIDUCIA_NODE_URL", "http://127.0.0.1:1")
         .env("FIDUCIA_BRAIN_URL", "http://127.0.0.1:1")
         .env("FIDUCIA_SIDECAR_ROLE", "exporter")
@@ -82,7 +85,10 @@ async fn hostile_forwarded_headers_and_cookies_cannot_taint_24_public_client_res
                 .await
                 .expect("real client request");
             assert_eq!(response.status(), reqwest::StatusCode::OK);
-            assert!(response.headers().get("access-control-allow-origin").is_none());
+            assert!(response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none());
             assert!(response.headers().get("location").is_none());
             let body: Value = response.json().await.expect("JSON response");
             let text = body.to_string();
