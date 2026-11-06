@@ -144,7 +144,6 @@ async fn public_client_headers_cannot_modify_exporter_label_authority() {
     assert!(!attacked.contains("untrusted.invalid"));
 }
 
-
 // Wave50: these cases invoke the production sidecar binary, not a mocked router.
 #[tokio::test]
 async fn wave50_head_metrics_is_bodyless_and_does_not_leak_private_labels() {
@@ -167,13 +166,22 @@ async fn wave50_mutating_methods_cannot_modify_public_metadata() {
         reqwest::Method::DELETE,
         reqwest::Method::PATCH,
     ] {
-        let denied = client.request(method, format!("{base}/meta"))
+        let denied = client
+            .request(method, format!("{base}/meta"))
             .body("synthetic-mutating-payload")
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
         assert_eq!(denied.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
     }
-    let identity: serde_json::Value = client.get(format!("{base}/meta"))
-        .send().await.unwrap().json().await.unwrap();
+    let identity: serde_json::Value = client
+        .get(format!("{base}/meta"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(identity["node_id"], NODE_ID);
     assert_eq!(identity["region"], REGION);
 }
@@ -219,11 +227,14 @@ async fn wave50_forwarded_authority_cannot_change_exporter_readiness() {
     let (base, _sidecar) = spawn();
     let client = reqwest::Client::new();
     wait_ready(&client, &base).await;
-    let response = client.get(format!("{base}/readyz?role=full&node_id=attacker"))
+    let response = client
+        .get(format!("{base}/readyz?role=full&node_id=attacker"))
         .header("Forwarded", "for=127.0.0.1;host=evil.invalid")
         .header("X-Forwarded-Proto", "https")
         .header("Cookie", "role=full;tenant=attacker")
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let raw = response.text().await.unwrap();
     assert!(!raw.contains("evil.invalid"));
